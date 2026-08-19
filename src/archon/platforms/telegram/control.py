@@ -107,7 +107,11 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
 
 
 async def run(rt: Runtime) -> None:
+    from ...pipeline import confirm
+
     bot, dp = build(rt)
+    confirm.register_handlers(dp, rt)
+    rt.clients["control_bot"] = bot
     rt.health["control_bot"] = "polling"
     me = await bot.get_me()
     rt.audit.note("control_bot_started", username=me.username)

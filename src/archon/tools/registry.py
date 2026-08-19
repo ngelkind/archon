@@ -96,7 +96,10 @@ class Registry:
             return json.dumps({"error": f"tool {name} is not available in this context"})
         try:
             sig = inspect.signature(tool.handler)
-            accepted = {
+            has_var_kw = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            accepted = dict(args) if has_var_kw else {
                 k: v for k, v in args.items() if k in sig.parameters
             }
             result = await tool.handler(ctx, **accepted)

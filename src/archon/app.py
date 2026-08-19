@@ -42,6 +42,8 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
 
     from .agent.owner import handle_owner_text
     from .llm.router import Router
+    from .tools import calendar as calendar_tools
+    from .tools import email_ as email_tools
     from .tools import llm_admin, system as system_tools
     from .tools.registry import Registry
 
@@ -49,6 +51,8 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     registry = Registry()
     llm_admin.register(registry)
     system_tools.register(registry)
+    calendar_tools.register(registry)
+    email_tools.register(registry)
     rt.registry = registry
     rt.owner_text_handler = partial(handle_owner_text, rt)
 
@@ -76,11 +80,19 @@ async def _supervise(rt: Runtime, name: str, coro_factory) -> None:
 
 
 async def main() -> None:
+    from .pipeline import ingest
+    from .platforms.gmail import poller as gmail_poller
+
     rt = build_runtime()
     tasks = [
         asyncio.create_task(_supervise(rt, "control_bot", lambda: control.run(rt))),
-        # M3+: gmail poller, scheduler, pipeline consumer
-        # M5: whatsapp client
-        # M6: telethon userbot
+        asyncio.create_task(_supervise(rt, "pipeline", lambda: ingest.run(rt))),
     ]
+    if rt.settings.google_token_path.exists():
+        tasks.append(
+            asyncio.create_task(_supervise(rt, "gmail", lambda: gmail_poller.run(rt)))
+        )
+    else:
+        rt.health["gmail"] = "no token (run scripts/google_consent.py)"
+    # M5: whatsapp client — M6: telethon userbot — M8: scheduler
     await asyncio.gather(*tasks)

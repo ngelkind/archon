@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     llm_active_provider: str = "gemini"  # anthropic | openai | gemini | openrouter | claude_code
     llm_daily_budget_usd: float = 3.0
     audit_store_content: bool = True
+    timezone: str = "Asia/Jerusalem"
+    gmail_poll_seconds: int = 90
 
     @property
     def db_path(self) -> Path:
