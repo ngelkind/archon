@@ -47,12 +47,17 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     from .tools import llm_admin, system as system_tools
     from .tools.registry import Registry
 
+    from .tools import settings_ as settings_tools
+    from .tools import whatsapp as whatsapp_tools
+
     rt.router = Router(rt)
     registry = Registry()
     llm_admin.register(registry)
     system_tools.register(registry)
     calendar_tools.register(registry)
     email_tools.register(registry)
+    whatsapp_tools.register(registry)
+    settings_tools.register(registry)
     rt.registry = registry
     rt.owner_text_handler = partial(handle_owner_text, rt)
 
@@ -94,5 +99,14 @@ async def main() -> None:
         )
     else:
         rt.health["gmail"] = "no token (run scripts/google_consent.py)"
-    # M5: whatsapp client — M6: telethon userbot — M8: scheduler
+
+    if rt.settings.wa_session_path.exists():
+        from .platforms.whatsapp import client as wa_client
+
+        tasks.append(
+            asyncio.create_task(_supervise(rt, "whatsapp", lambda: wa_client.run(rt)))
+        )
+    else:
+        rt.health["whatsapp"] = "no session (deploy/MIGRATION.md step 5)"
+    # M6: telethon userbot — M8: scheduler
     await asyncio.gather(*tasks)

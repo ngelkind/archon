@@ -1,0 +1,91 @@
+"""WhatsApp sending with the humanized pattern from wa_helper's _send_slowly:
+random pre-delay, typing presence proportional to length, then send.
+
+All sends flow through send_text/send_image; the confirm gate calls these via
+the registered executors in tools/whatsapp.py.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import random
+from typing import Any
+
+from ...db import repo
+from ...runtime import Runtime
+
+_TYPING_S_PER_CHAR = 0.045
+_TYPING_MAX_S = 10.0
+
+
+def _delays(rt: Runtime) -> tuple[float, float]:
+    lo = float(repo.setting_get(rt.db, "wa.send_delay_min_s", 2.0))
+    hi = float(repo.setting_get(rt.db, "wa.send_delay_max_s", 8.0))
+    return (min(lo, hi), max(lo, hi))
+
+
+def _client(rt: Runtime) -> Any:
+    client = rt.clients.get("whatsapp")
+    if client is None:
+        raise RuntimeError("WhatsApp is not connected")
+    return client
+
+
+def _to_jid(raw: str) -> Any:
+    from neonize.utils import build_jid
+
+    user, _, server = raw.partition("@")
+    return build_jid(user, server or "s.whatsapp.net")
+
+
+async def send_text(rt: Runtime, chat_jid: str, text: str) -> str:
+    from neonize.utils.enum import ChatPresence, ChatPresenceMedia
+
+    client = _client(rt)
+    target = _to_jid(chat_jid)
+    lo, hi = _delays(rt)
+    await asyncio.sleep(random.uniform(lo, hi))
+    try:
+        await client.send_chat_presence(
+            target, ChatPresence.CHAT_PRESENCE_COMPOSING,
+            ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT,
+        )
+        await asyncio.sleep(min(len(text) * _TYPING_S_PER_CHAR, _TYPING_MAX_S))
+        await client.send_chat_presence(
+            target, ChatPresence.CHAT_PRESENCE_PAUSED,
+            ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT,
+        )
+    except Exception:  # noqa: BLE001 — presence is cosmetic; the send is what matters
+        pass
+    resp = await client.send_message(target, text)
+    msg_id = getattr(resp, "ID", "") or "sent"
+    chat_pk = repo.chat_upsert(rt.db, "wa", chat_jid, None,
+                               "group" if chat_jid.endswith("@g.us") else "private")
+    rt.db.execute(
+        "INSERT OR IGNORE INTO messages (chat_pk, platform, chat_id, msg_id, source, "
+        "sender_id, is_from_me, ts, text) VALUES (?, 'wa', ?, ?, 'wa', 'me', 1, "
+        "datetime('now'), ?)",
+        (chat_pk, chat_jid, msg_id, text),
+    )
+    return str(msg_id)
+
+
+async def send_image(rt: Runtime, chat_jid: str, image_path: str,
+                     caption: str | None = None) -> str:
+    client = _client(rt)
+    target = _to_jid(chat_jid)
+    lo, hi = _delays(rt)
+    await asyncio.sleep(random.uniform(lo, hi))
+    resp = await client.send_image(target, image_path, caption=caption or "")
+    return str(getattr(resp, "ID", "") or "sent")
+
+
+async def mark_read(rt: Runtime, chat_jid: str, message_ids: list[str]) -> None:
+    client = _client(rt)
+    await client.mark_read(message_ids, chat=_to_jid(chat_jid))
+
+
+async def check_number(rt: Runtime, phone: str) -> bool:
+    client = _client(rt)
+    results = await client.is_on_whatsapp(phone)
+    return bool(results and getattr(results[0], "IsIn", False))

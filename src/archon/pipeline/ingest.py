@@ -73,6 +73,41 @@ class _Debouncer:
                 self.rt.audit.note("pipeline_batch_error", error=repr(exc)[:300])
 
 
+async def _describe_images(rt: Runtime, router, batch: list[InboundMessage],
+                           chat_pk: int | None) -> list[str]:
+    """Vision step: downloaded media → short untrusted description."""
+    from pathlib import Path
+
+    from ..llm.base import ImagePart
+
+    notes: list[str] = []
+    for m in batch:
+        for media in m.media:
+            if not media.local_path:
+                continue
+            try:
+                data = Path(media.local_path).read_bytes()
+                result = await router.complete(
+                    purpose="vision",
+                    system="You describe images for a personal assistant. Be brief "
+                           "(2-4 sentences) and prioritize any event details: dates, "
+                           "times, places, names, invitations, tickets, posters.",
+                    messages=[ChatMessage(
+                        role="user",
+                        text="Describe this image.",
+                        images=[ImagePart(data=data, mime=media.mime or "image/jpeg")],
+                    )],
+                    max_tokens=400,
+                    chat_pk=chat_pk,
+                )
+                notes.append(
+                    f"[image from {m.sender_name or m.sender_id}] {result.text.strip()}"
+                )
+            except (ProviderError, OSError) as exc:
+                rt.audit.note("vision_failed", error=str(exc)[:200])
+    return notes
+
+
 async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     from ..llm.router import Router
 
@@ -84,9 +119,13 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     auto_reply = bool(chat_row["auto_reply"]) if chat_row else False
     persona_id = chat_row["persona_id"] if chat_row else None
 
+    image_notes = await _describe_images(rt, router, batch, chat_pk)
     combined = "\n---\n".join(
-        f"[{m.sender_name or m.sender_id}] {m.text}" for m in batch if m.text
+        [f"[{m.sender_name or m.sender_id}] {m.text}" for m in batch if m.text]
+        + image_notes
     )
+    if not combined.strip():
+        return
     verdict = await triage(
         router,
         platform=first.platform,
