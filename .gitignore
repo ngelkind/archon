@@ -1,0 +1,24 @@
+# Secrets and runtime state — NEVER commit
+.env
+.env.*
+secrets/
+data/
+backups/
+*.db
+*.db-*
+*.sqlite
+*.session
+token.json
+client_secret.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
