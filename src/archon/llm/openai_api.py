@@ -70,6 +70,7 @@ class OpenAIProvider:
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 4096,
         json_only: bool = False,
+        native_web_search: bool = False,
     ) -> LLMResult:
         kwargs: dict[str, Any] = {
             "model": model,

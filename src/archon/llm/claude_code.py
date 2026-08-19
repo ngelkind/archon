@@ -101,6 +101,7 @@ class ClaudeCodeProvider:
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 4096,
         json_only: bool = False,
+        native_web_search: bool = False,
     ) -> LLMResult:
         if tools:
             raise ProviderError("claude_code backend does not support tool calling")

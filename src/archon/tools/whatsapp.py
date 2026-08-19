@@ -39,6 +39,21 @@ async def _send_or_confirm(ctx: ToolContext, chat_jid: str, text: str | None,
     policy = row["send_policy"] if row else "confirm"
     payload = {"chat_jid": chat_jid, "text": text, "image_path": image_path,
                "chat_name": chat_name}
+
+    # Free-send chats with a delay policy: queue the reply instead of sending
+    # now — the scheduler fires it (looks natural, and gives time to cancel).
+    if policy == "free" and ctx.scope == "inbound" and row is not None and text:
+        from ..scheduler.delays import compute_due
+
+        due = compute_due(row["delay_policy_json"])
+        if due is not None:
+            rt.db.execute(
+                "INSERT INTO pending_replies (chat_pk, draft_text, due_at) VALUES (?, ?, ?)",
+                (row["id"], text, due.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return json.dumps({"status": "queued_delayed",
+                               "due_utc": due.isoformat(timespec="seconds")})
+
     if policy == "confirm":
         preview = (text or f"[image {image_path}]")[:600]
         action_id = await confirm.request_confirmation(

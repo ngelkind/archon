@@ -173,6 +173,16 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
         f"{wrap_untrusted(combined)}\n\nTasks:\n" + "\n".join(task_lines)
     )
 
+    # Per-(chat, persona) rolling context so ongoing conversations have memory.
+    history = []
+    if chat_pk is not None:
+        history = [
+            ChatMessage(role=r["role"], text=r["content"])  # type: ignore[arg-type]
+            for r in repo.context_get(rt.db, chat_pk, persona_id, limit=16)
+            if r["role"] in ("user", "assistant") and r["content"]
+        ]
+    history.append(ChatMessage(role="user", text=user_text))
+
     ctx = ToolContext(
         rt=rt, scope="inbound", origin_chat_pk=chat_pk,
         extras={"source_msg_id": first.msg_id, "platform": first.platform,
@@ -182,10 +192,14 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
         result = await run_agent(
             router, registry, ctx,
             system=system,
-            messages=[ChatMessage(role="user", text=user_text)],
+            messages=history,
             purpose="agent",
             chat_pk=chat_pk,
         )
+        if chat_pk is not None:
+            repo.context_add(rt.db, chat_pk, persona_id, "user", combined[:4000])
+            repo.context_add(rt.db, chat_pk, persona_id, "assistant", (result or "")[:4000])
+            repo.context_prune(rt.db, chat_pk, persona_id)
         rt.audit.note("inbound_agent_done", chat=first.chat_id,
                       summary=(result or "")[:200])
     except ProviderError as exc:

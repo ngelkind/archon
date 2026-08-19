@@ -64,7 +64,7 @@ class FakeProvider:
         self.calls = 0
 
     async def complete(self, *, model, system, messages, tools=None,
-                       max_tokens=4096, json_only=False):
+                       max_tokens=4096, json_only=False, native_web_search=False):
         self.calls += 1
         if self.calls == 1 and tools:
             return LLMResult(

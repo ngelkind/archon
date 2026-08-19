@@ -82,6 +82,7 @@ class GeminiProvider:
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 4096,
         json_only: bool = False,
+        native_web_search: bool = False,
     ) -> LLMResult:
         config = gt.GenerateContentConfig(
             system_instruction=system,
@@ -100,6 +101,8 @@ class GeminiProvider:
                     ]
                 )
             ]
+        elif native_web_search:
+            config.tools = [gt.Tool(google_search=gt.GoogleSearch())]
         elif json_only:
             config.response_mime_type = "application/json"
 

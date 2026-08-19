@@ -47,9 +47,13 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     from .tools import llm_admin, system as system_tools
     from .tools.registry import Registry
 
+    from .tools import contexts as context_tools
     from .tools import logging_ as logging_tools
+    from .tools import scheduling as scheduling_tools
     from .tools import settings_ as settings_tools
+    from .tools import subbots as subbot_tools
     from .tools import telegram as telegram_tools
+    from .tools import websearch as websearch_tools
     from .tools import whatsapp as whatsapp_tools
 
     rt.router = Router(rt)
@@ -62,6 +66,10 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     telegram_tools.register(registry)
     settings_tools.register(registry)
     logging_tools.register(registry)
+    scheduling_tools.register(registry)
+    context_tools.register(registry)
+    websearch_tools.register(registry)
+    subbot_tools.register(registry)
     rt.registry = registry
     rt.owner_text_handler = partial(handle_owner_text, rt)
 
@@ -113,10 +121,17 @@ async def main() -> None:
     else:
         rt.health["whatsapp"] = "no session (deploy/MIGRATION.md step 5)"
 
+    from .platforms.telegram import subbots as tg_subbots
     from .platforms.telegram import userbot as tg_userbot
+    from .scheduler import loop as scheduler_loop
 
     tasks.append(
         asyncio.create_task(_supervise(rt, "tg_userbot", lambda: tg_userbot.run(rt)))
     )
-    # M8: scheduler
+    tasks.append(
+        asyncio.create_task(_supervise(rt, "scheduler", lambda: scheduler_loop.run(rt)))
+    )
+    tasks.append(
+        asyncio.create_task(_supervise(rt, "subbots", lambda: tg_subbots.run(rt)))
+    )
     await asyncio.gather(*tasks)

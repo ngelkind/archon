@@ -97,6 +97,7 @@ class AnthropicProvider:
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 4096,
         json_only: bool = False,
+        native_web_search: bool = False,
     ) -> LLMResult:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -109,6 +110,12 @@ class AnthropicProvider:
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
             ]
+        if native_web_search:
+            # Anthropic server-side web search: runs on their infrastructure,
+            # results come back as content blocks alongside text.
+            kwargs.setdefault("tools", []).append(
+                {"type": "web_search_20260209", "name": "web_search", "max_uses": 4}
+            )
         # json_only relies on the prompt-side instruction; structured outputs
         # would need a fixed schema per call site, which triage supplies itself.
         try:

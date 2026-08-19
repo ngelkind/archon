@@ -66,6 +66,20 @@ async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> 
             return json.dumps({"error": "inbound runs may only send to the originating chat"})
 
     policy = row["send_policy"] if row else "confirm"
+
+    if (policy == "free" and ctx.scope == "inbound" and row is not None
+            and payload.get("text") and not payload.get("schedule_iso")):
+        from ..scheduler.delays import compute_due
+
+        due = compute_due(row["delay_policy_json"])
+        if due is not None:
+            rt.db.execute(
+                "INSERT INTO pending_replies (chat_pk, draft_text, due_at) VALUES (?, ?, ?)",
+                (row["id"], payload["text"], due.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            return json.dumps({"status": "queued_delayed",
+                               "due_utc": due.isoformat(timespec="seconds")})
+
     if policy == "confirm":
         action_id = await confirm.request_confirmation(
             rt, kind=kind, payload=payload,

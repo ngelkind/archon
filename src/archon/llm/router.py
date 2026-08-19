@@ -132,6 +132,7 @@ class Router:
         tools: list[ToolSpec] | None = None,
         max_tokens: int = 4096,
         json_only: bool = False,
+        native_web_search: bool = False,
         chat_pk: int | None = None,
     ) -> LLMResult:
         name = self.active_provider_name()
@@ -156,6 +157,7 @@ class Router:
                 tools=tools,
                 max_tokens=max_tokens,
                 json_only=json_only,
+                native_web_search=native_web_search,
             )
         except ProviderError:
             repo.llm_call_record(
