@@ -1,0 +1,6 @@
+[Unit]
+Description=Archon egress monitor
+
+[Service]
+Type=oneshot
+ExecStart=/opt/archon/app/deploy/egress-monitor.sh

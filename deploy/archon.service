@@ -1,0 +1,30 @@
+[Unit]
+Description=Archon personal assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/archon/app
+EnvironmentFile=/opt/archon/secrets/.env
+Environment=ARCHON_DATA=/opt/archon/data
+Environment=ARCHON_SECRETS=/opt/archon/secrets
+ExecStart=/home/ubuntu/.local/bin/uv run --frozen -m archon
+Restart=always
+RestartSec=5
+
+# Sandboxing (SECURITY.md): the process can write only its own data/secrets.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/archon/data /opt/archon/secrets /opt/archon/app/.venv
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

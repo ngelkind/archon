@@ -1,0 +1,30 @@
+#cloud-config
+# Oracle A1 (Ubuntu 24.04 aarch64) first-boot setup for Archon.
+package_update: true
+packages:
+  - git
+  - sqlite3
+  - curl
+  - golang-go   # for building goneonize from source (SECURITY.md hardening)
+
+write_files:
+  - path: /home/ubuntu/bootstrap.sh
+    permissions: "0755"
+    owner: ubuntu:ubuntu
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      sudo mkdir -p /opt/archon/{app,data,secrets,backups}
+      sudo chown -R ubuntu:ubuntu /opt/archon
+      chmod 700 /opt/archon/secrets
+      # Deploy key is scp'd by the provisioner before this runs (see provision_oci.sh)
+      export GIT_SSH_COMMAND="ssh -i /home/ubuntu/.ssh/archon_deploy -o StrictHostKeyChecking=accept-new"
+      if [ ! -d /opt/archon/app/.git ]; then
+        git clone git@github.com:ngelkind/archon.git /opt/archon/app
+      fi
+      cd /opt/archon/app && bash deploy/install.sh
+
+runcmd:
+  # Ubuntu images ship iptables REJECT rules beyond what OCI security lists do;
+  # we keep them (SSH already allowed). Nothing listens anyway — long polling only.
+  - [su, ubuntu, -c, "echo cloud-init done > /home/ubuntu/cloud-init-done"]

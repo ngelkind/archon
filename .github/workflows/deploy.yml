@@ -1,0 +1,47 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/0.12.5/install.sh | sh
+      - name: Run tests
+        run: ~/.local/bin/uv run --frozen pytest
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # No third-party actions touch the SSH key (SECURITY.md): plain ssh only.
+    steps:
+      - name: Deploy over SSH
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+              "ubuntu@$VM_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/archon/app
+          git fetch origin main
+          git reset --hard origin/main
+          ~/.local/bin/uv sync --frozen
+          sudo systemctl restart archon
+          sleep 5
+          systemctl is-active archon
+          REMOTE

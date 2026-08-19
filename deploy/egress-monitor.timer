@@ -1,0 +1,9 @@
+[Unit]
+Description=Archon egress monitor timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
