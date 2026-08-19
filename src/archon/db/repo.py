@@ -198,6 +198,42 @@ def llm_cost_breakdown(db: Db, since_expr: str) -> list[sqlite3.Row]:
     )
 
 
+# --- agent conversation contexts ---------------------------------------------
+
+def context_add(db: Db, chat_pk: int, persona_id: int | None, role: str, content: str) -> None:
+    db.execute(
+        "INSERT INTO context_messages (chat_pk, persona_id, role, content) VALUES (?, ?, ?, ?)",
+        (chat_pk, persona_id, role, content),
+    )
+
+
+def context_get(
+    db: Db, chat_pk: int, persona_id: int | None, limit: int = 40
+) -> list[sqlite3.Row]:
+    rows = db.query(
+        "SELECT * FROM context_messages WHERE chat_pk = ? AND persona_id IS ? "
+        "ORDER BY id DESC LIMIT ?",
+        (chat_pk, persona_id, limit),
+    )
+    return list(reversed(rows))
+
+
+def context_prune(db: Db, chat_pk: int, persona_id: int | None, keep: int = 80) -> None:
+    db.execute(
+        "DELETE FROM context_messages WHERE chat_pk = ? AND persona_id IS ? AND id NOT IN ("
+        "SELECT id FROM context_messages WHERE chat_pk = ? AND persona_id IS ? "
+        "ORDER BY id DESC LIMIT ?)",
+        (chat_pk, persona_id, chat_pk, persona_id, keep),
+    )
+
+
+def context_clear(db: Db, chat_pk: int, persona_id: int | None = None) -> None:
+    db.execute(
+        "DELETE FROM context_messages WHERE chat_pk = ? AND persona_id IS ?",
+        (chat_pk, persona_id),
+    )
+
+
 # --- audit ------------------------------------------------------------------
 
 def audit_add(db: Db, actor: str, action: str, detail: dict[str, Any] | None = None) -> None:

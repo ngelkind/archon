@@ -32,7 +32,25 @@ def build_runtime() -> Runtime:
     version = migrate(db)
     audit = AuditLog(settings.audit_log_path, db, store_content=settings.audit_store_content)
     audit.note("startup", schema_version=version)
-    return Runtime(settings=settings, db=db, audit=audit, bus=Bus())
+    rt = Runtime(settings=settings, db=db, audit=audit, bus=Bus())
+    _wire_llm_and_tools(rt)
+    return rt
+
+
+def _wire_llm_and_tools(rt: Runtime) -> None:
+    from functools import partial
+
+    from .agent.owner import handle_owner_text
+    from .llm.router import Router
+    from .tools import llm_admin, system as system_tools
+    from .tools.registry import Registry
+
+    rt.router = Router(rt)
+    registry = Registry()
+    llm_admin.register(registry)
+    system_tools.register(registry)
+    rt.registry = registry
+    rt.owner_text_handler = partial(handle_owner_text, rt)
 
 
 async def _supervise(rt: Runtime, name: str, coro_factory) -> None:

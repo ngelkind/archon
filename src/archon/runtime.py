@@ -20,6 +20,14 @@ class Runtime:
     started_at: float = field(default_factory=time.time)
     # Subsystem health, shown by /status: name -> short state string.
     health: dict[str, str] = field(default_factory=dict)
+    # Wired in app.build_runtime after construction (circular-import avoidance):
+    # llm.router.Router, tools.registry.Registry, and the control-bot text
+    # handler. Typed as Any deliberately.
+    router: object | None = None
+    registry: object | None = None
+    owner_text_handler: object | None = None
+    # Platform clients, set by their subsystems when connected (M3+).
+    clients: dict[str, object] = field(default_factory=dict)
 
     def uptime_s(self) -> int:
         return int(time.time() - self.started_at)

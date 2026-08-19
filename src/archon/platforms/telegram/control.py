@@ -77,18 +77,31 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             f"30d: ${month['cost']:.4f} ({month['calls']} calls)"
         )
 
-    # Catch-all for owner text without a command: reserved for the agent
-    # conversation loop (wired in M2 — tools/registry + agent).
+    @dp.message(Command("ask"))
+    async def cmd_ask(message: Message) -> None:
+        if not is_owner(message):
+            return
+        text = (message.text or "").removeprefix("/ask").strip()
+        if not text:
+            await message.answer("Usage: /ask <question>")
+            return
+        handler = rt.owner_text_handler
+        if handler is None:
+            await message.answer("Agent loop not wired.")
+        else:
+            await handler(message, text_override=text)  # type: ignore[operator]
+
+    # Catch-all: any owner text without a command goes to the agent loop.
     @dp.message(F.text & ~F.text.startswith("/"))
     async def owner_text(message: Message) -> None:
         if not is_owner(message):
             rt.audit.note("non_owner_message", sender=message.from_user.id if message.from_user else None)
             return
-        handler = getattr(rt, "owner_text_handler", None)
+        handler = rt.owner_text_handler
         if handler is None:
-            await message.answer("Agent loop not wired yet (M2). Use /status.")
+            await message.answer("Agent loop not wired yet. Use /status.")
         else:
-            await handler(message)
+            await handler(message)  # type: ignore[operator]
 
     return bot, dp
 
