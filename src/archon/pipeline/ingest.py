@@ -15,6 +15,7 @@ from ..agent.prompts import INBOUND_AGENT_SYSTEM
 from ..agent.triage import triage
 from ..db import repo
 from ..llm.base import ChatMessage, ProviderError, wrap_untrusted
+from ..logging_ import tglog
 from ..models import InboundMessage
 from ..runtime import Runtime
 from ..tools.registry import Registry, ToolContext
@@ -203,10 +204,13 @@ async def run(rt: Runtime) -> None:
             chat_row = repo.chat_get(rt.db, msg.platform, msg.chat_id)
 
             if msg.is_edit:
-                repo.message_mark_edited(rt.db, msg.platform, msg.chat_id,
-                                         msg.msg_id, msg.text)
+                before = repo.message_mark_edited(rt.db, msg.platform, msg.chat_id,
+                                                  msg.msg_id, msg.text)
+                await tglog.log_change(rt, msg, before)
             elif msg.is_delete:
-                repo.message_mark_deleted(rt.db, msg.platform, msg.chat_id, msg.msg_id)
+                before = repo.message_mark_deleted(rt.db, msg.platform, msg.chat_id,
+                                                   msg.msg_id)
+                await tglog.log_change(rt, msg, before)
             else:
                 repo.message_upsert(rt.db, msg, chat_pk)
 

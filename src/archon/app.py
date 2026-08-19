@@ -47,7 +47,9 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     from .tools import llm_admin, system as system_tools
     from .tools.registry import Registry
 
+    from .tools import logging_ as logging_tools
     from .tools import settings_ as settings_tools
+    from .tools import telegram as telegram_tools
     from .tools import whatsapp as whatsapp_tools
 
     rt.router = Router(rt)
@@ -57,7 +59,9 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     calendar_tools.register(registry)
     email_tools.register(registry)
     whatsapp_tools.register(registry)
+    telegram_tools.register(registry)
     settings_tools.register(registry)
+    logging_tools.register(registry)
     rt.registry = registry
     rt.owner_text_handler = partial(handle_owner_text, rt)
 
@@ -108,5 +112,11 @@ async def main() -> None:
         )
     else:
         rt.health["whatsapp"] = "no session (deploy/MIGRATION.md step 5)"
-    # M6: telethon userbot — M8: scheduler
+
+    from .platforms.telegram import userbot as tg_userbot
+
+    tasks.append(
+        asyncio.create_task(_supervise(rt, "tg_userbot", lambda: tg_userbot.run(rt)))
+    )
+    # M8: scheduler
     await asyncio.gather(*tasks)
