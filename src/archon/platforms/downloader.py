@@ -55,7 +55,16 @@ def _download_sync(url: str, out_dir: Path, max_bytes: int) -> DownloadedVideo:
         "restrictfilenames": True,
         "max_filesize": max_bytes,
         "socket_timeout": 60,
+        # YouTube blocks datacenter IPs on the default 'web' client with
+        # "Sign in to confirm you're not a bot". These player clients avoid
+        # that check without cookies. If a cookies file is present, use it too.
+        "extractor_args": {
+            "youtube": {"player_client": ["tv", "ios", "mweb", "android_vr", "web"]}
+        },
     }
+    cookies = out_dir.parent / "youtube_cookies.txt"
+    if cookies.exists():
+        opts["cookiefile"] = str(cookies)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
