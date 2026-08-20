@@ -383,12 +383,14 @@ def test_two_concurrent_approvals_execute_exactly_once(tmp_path):
     assert ran == ["executed"]  # exactly one executor run
 
 
-# --- ntfy push notifier ------------------------------------------------------
+# --- ntfy push notifier (Part C) --------------------------------------------
 
 class _FakeAsyncClient:
     """Stand-in for httpx.AsyncClient that records posts instead of sending."""
 
     posts: list[dict] = []
+    fail_with: Exception | None = None
+    status_code: int = 200
 
     def __init__(self, *a, **kw):
         pass
@@ -399,21 +401,32 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, *, content=None, headers=None):
-        type(self).posts.append({"url": url, "content": content, "headers": headers})
+    async def post(self, url, *, json=None, headers=None):
+        if type(self).fail_with is not None:
+            raise type(self).fail_with
+        type(self).posts.append({"url": url, "json": json, "headers": headers or {}})
+        status = type(self).status_code
+
+        class _Resp:
+            status_code = status
+
+        return _Resp()
 
 
 def _patch_httpx(monkeypatch):
     from archon.api import push as push_mod
 
     _FakeAsyncClient.posts = []
+    _FakeAsyncClient.fail_with = None
+    _FakeAsyncClient.status_code = 200
     monkeypatch.setattr(push_mod.httpx, "AsyncClient", _FakeAsyncClient)
     return _FakeAsyncClient
 
 
-def _rt_with_push(tmp_path, url: str, topic: str = "archon-abc"):
+def _rt_with_push(tmp_path, url: str, topic: str | None = "archon-abc", token: str = ""):
     rt = make_rt(tmp_path)
     rt.settings.ntfy_base_url = url
+    rt.settings.ntfy_auth_token = token
     repo.api_device_create(rt.db, name="phone", token_hash="h1", push_endpoint=topic)
     return rt
 
@@ -422,48 +435,134 @@ def test_push_is_a_no_op_when_unconfigured(tmp_path, monkeypatch):
     from archon.api import push
 
     fake = _patch_httpx(monkeypatch)
-    rt = _rt_with_push(tmp_path, url="")  # ntfy_base_url empty → disabled
+    rt = _rt_with_push(tmp_path, url="")  # ntfy_base_url empty -> disabled
     assert push.enabled(rt) is False
-    assert asyncio.run(push.notify(rt, title="t", body="b")) == 0
-    asyncio.run(push.approval_notifier(rt, 7, "wa.send", "to Dana", {"text": "hi"}))
+    assert asyncio.run(push.notify(rt, title="t", message="m")) == 0
+    asyncio.run(push.ntfy_confirm_notifier(rt, 7, "wa.send", "to Dana", {"text": "hi"}))
     assert fake.posts == []  # nothing attempted at all
 
 
-def test_push_posts_content_free_payload(tmp_path, monkeypatch):
+def test_push_is_a_no_op_when_device_has_no_topic(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://ntfy", topic=None)
+    assert asyncio.run(push.notify(rt, title="t", message="m")) == 0
+    assert fake.posts == []
+
+
+def test_push_payload_shape_carries_id_but_no_content(tmp_path, monkeypatch):
     from archon.api import push
 
     fake = _patch_httpx(monkeypatch)
     rt = _rt_with_push(tmp_path, url="http://10.8.0.1:8080/")
-    asyncio.run(push.approval_notifier(
+    asyncio.run(push.ntfy_confirm_notifier(
         rt, 42, "wa.send", "Send 'meet at 8' to Dana", {"text": "meet at 8"}))
 
     assert len(fake.posts) == 1
     post = fake.posts[0]
-    assert post["url"] == "http://10.8.0.1:8080/archon-abc"  # trailing slash handled
-    assert post["headers"]["Title"] == "Approval requested"
-    assert post["headers"]["X-Action-Id"] == "42"
-    # The whole point: no kind, description, or message content in the payload.
-    blob = f"{post['url']}{post['content']}{post['headers']}"
-    for secret in ("wa.send", "Dana", "meet at 8"):
+    # ntfy JSON publish: POST the BASE url with the topic inside the body.
+    # Custom headers (X-Action-Id) are not forwarded by ntfy, so the action id
+    # travels as a tag instead.
+    assert post["url"] == "http://10.8.0.1:8080"  # trailing slash normalised
+    body = post["json"]
+    assert body["topic"] == "archon-abc"
+    assert body["title"] == "Approval requested"
+    assert body["message"] == "wa.send"  # action TYPE only
+    assert push.action_id_from_tags(body["tags"]) == 42
+    # The description and the message content never leave the VM this way.
+    blob = str(post)
+    for secret in ("Dana", "meet at 8"):
         assert secret not in blob
 
 
-def test_push_skips_revoked_devices_and_survives_broker_failure(tmp_path, monkeypatch):
+def test_push_sends_auth_token_when_configured(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://ntfy", token="tk_secret")
+    asyncio.run(push.notify(rt, title="t", message="m"))
+    assert fake.posts[0]["headers"]["Authorization"] == "Bearer tk_secret"
+
+    fake2 = _patch_httpx(monkeypatch)
+    rt2 = _rt_with_push(tmp_path / "b", url="http://ntfy")
+    asyncio.run(push.notify(rt2, title="t", message="m"))
+    assert "Authorization" not in fake2.posts[0]["headers"]
+
+
+def test_push_one_request_per_device_with_topic(tmp_path, monkeypatch):
     from archon.api import push
 
     fake = _patch_httpx(monkeypatch)
     rt = _rt_with_push(tmp_path, url="http://ntfy")
-    dead = repo.api_device_create(rt.db, name="old", token_hash="h2",
-                                  push_endpoint="archon-dead")
-    repo.api_device_revoke(rt.db, dead)
-    assert asyncio.run(push.notify(rt, title="t", body="b")) == 1
-    assert [p["url"] for p in fake.posts] == ["http://ntfy/archon-abc"]
+    repo.api_device_create(rt.db, name="tablet", token_hash="h2",
+                           push_endpoint="archon-tablet")
+    repo.api_device_create(rt.db, name="no-topic", token_hash="h3")
+    revoked = repo.api_device_create(rt.db, name="old", token_hash="h4",
+                                     push_endpoint="archon-dead")
+    repo.api_device_revoke(rt.db, revoked)
 
-    async def boom(*a, **kw):
-        raise RuntimeError("broker down")
+    assert asyncio.run(push.notify(rt, title="t", message="m")) == 2
+    assert sorted(p["json"]["topic"] for p in fake.posts) == [
+        "archon-abc", "archon-tablet"]
 
-    monkeypatch.setattr(fake, "post", boom)
-    assert asyncio.run(push.notify(rt, title="t", body="b")) == 0  # never raises
+
+def test_push_swallows_network_error_into_an_audit_note(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    fake.fail_with = RuntimeError("broker down")
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+    assert asyncio.run(push.notify(rt, title="t", message="m")) == 0  # never raises
+    notes = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "push_failed" in notes
+
+
+def test_push_treats_http_error_status_as_not_delivered(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    fake.status_code = 503
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+    assert asyncio.run(push.notify(rt, title="t", message="m")) == 0
+    notes = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "push_rejected" in notes
+
+
+def test_push_failure_does_not_propagate_out_of_request_confirmation(tmp_path, monkeypatch):
+    """The gate must survive a dead broker: the pending row is still written."""
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    fake.fail_with = RuntimeError("broker down")
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+    push.register(rt)
+    try:
+        action_id = asyncio.run(confirm.request_confirmation(
+            rt, kind="wa.send", payload={"text": "hi"}, description="to Dana"))
+    finally:
+        confirm._NOTIFIERS.remove(push.ntfy_confirm_notifier)
+    assert repo.pending_action_get(rt.db, action_id)["status"] == "pending"
+
+
+def test_confirm_gate_pushes_when_configured(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+    push.register(rt)
+    try:
+        action_id = asyncio.run(confirm.request_confirmation(
+            rt, kind="event.create", payload={"title": "Dentist"},
+            description="Dentist at 15:00"))
+    finally:
+        confirm._NOTIFIERS.remove(push.ntfy_confirm_notifier)
+
+    assert len(fake.posts) == 1
+    body = fake.posts[0]["json"]
+    assert body["message"] == "event.create"
+    assert push.action_id_from_tags(body["tags"]) == action_id
+    assert "Dentist" not in str(fake.posts[0])
 
 
 def test_owner_alert_publishes_event_and_pushes(tmp_path, monkeypatch):
@@ -480,7 +579,7 @@ def test_owner_alert_publishes_event_and_pushes(tmp_path, monkeypatch):
     event = asyncio.run(scenario())
     assert event["kind"] == "owner.alert"
     assert event["data"] == {"source": "tg_notify_owner"}
-    assert fake.posts[0]["headers"]["Title"] == "Archon alert"
+    assert fake.posts[0]["json"]["title"] == "Archon alert"
 
 
 def test_push_register_is_idempotent(tmp_path):
@@ -492,9 +591,9 @@ def test_push_register_is_idempotent(tmp_path):
     push.register(rt)
     try:
         assert len(confirm._NOTIFIERS) == before + 1
-        assert push.approval_notifier in confirm._NOTIFIERS
+        assert push.ntfy_confirm_notifier in confirm._NOTIFIERS
     finally:
-        confirm._NOTIFIERS.remove(push.approval_notifier)
+        confirm._NOTIFIERS.remove(push.ntfy_confirm_notifier)
 
 
 def test_tg_notify_owner_also_pushes(tmp_path, monkeypatch):

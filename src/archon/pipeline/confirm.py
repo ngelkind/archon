@@ -186,11 +186,11 @@ def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
             pass
 
         outcome = await resolve_action(rt, action_id, verdict, actor="telegram")
+        # No second query.answer() here: the early ack above already consumed
+        # this callback query, so answering again only logs an error.
         if outcome.status in ("unknown", "already"):
-            await query.answer("Already handled or unknown.")
             return
         if outcome.status == "expired":
-            await query.answer("Expired.")
             if query.message:
                 await query.message.edit_text(query.message.html_text + "\n\n⏰ Expired")
             return
