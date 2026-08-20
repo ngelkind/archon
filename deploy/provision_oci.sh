@@ -25,7 +25,7 @@ echo "== SSH keys =="
 
 echo "== Network =="
 VCN_ID=$(oci network vcn list -c "$COMPARTMENT_ID" --display-name archon-vcn \
-  | python -c "import json,sys; d=json.load(sys.stdin)['data']; print(d[0]['id'] if d else '')")
+  | python -c "import json,sys; s=sys.stdin.read().strip(); d=json.loads(s)['data'] if s else []; print(d[0]['id'] if d else '')")
 if [ -z "$VCN_ID" ]; then
   VCN_ID=$(oci network vcn create -c "$COMPARTMENT_ID" --cidr-blocks '["10.0.0.0/16"]' \
     --display-name archon-vcn --wait-for-state AVAILABLE \
@@ -34,7 +34,7 @@ fi
 echo "VCN: $VCN_ID"
 
 IG_ID=$(oci network internet-gateway list -c "$COMPARTMENT_ID" --vcn-id "$VCN_ID" \
-  | python -c "import json,sys; d=json.load(sys.stdin)['data']; print(d[0]['id'] if d else '')")
+  | python -c "import json,sys; s=sys.stdin.read().strip(); d=json.loads(s)['data'] if s else []; print(d[0]['id'] if d else '')")
 if [ -z "$IG_ID" ]; then
   IG_ID=$(oci network internet-gateway create -c "$COMPARTMENT_ID" --vcn-id "$VCN_ID" \
     --is-enabled true --display-name archon-ig --wait-for-state AVAILABLE \
@@ -42,19 +42,19 @@ if [ -z "$IG_ID" ]; then
 fi
 
 RT_ID=$(oci network route-table list -c "$COMPARTMENT_ID" --vcn-id "$VCN_ID" \
-  | python -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])")
+  | python -c "import json,sys; s=sys.stdin.read().strip(); d=json.loads(s)['data'] if s else []; print(d[0]['id'] if d else '')")
 oci network route-table update --rt-id "$RT_ID" --force --route-rules \
   "[{\"destination\": \"0.0.0.0/0\", \"networkEntityId\": \"$IG_ID\"}]" >/dev/null
 
 SL_ID=$(oci network security-list list -c "$COMPARTMENT_ID" --vcn-id "$VCN_ID" \
-  | python -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])")
+  | python -c "import json,sys; s=sys.stdin.read().strip(); d=json.loads(s)['data'] if s else []; print(d[0]['id'] if d else '')")
 # SSH-only ingress; all egress.
 oci network security-list update --security-list-id "$SL_ID" --force \
   --ingress-security-rules '[{"protocol": "6", "source": "0.0.0.0/0", "tcpOptions": {"destinationPortRange": {"min": 22, "max": 22}}}]' \
   --egress-security-rules '[{"protocol": "all", "destination": "0.0.0.0/0"}]' >/dev/null
 
 SUBNET_ID=$(oci network subnet list -c "$COMPARTMENT_ID" --vcn-id "$VCN_ID" \
-  | python -c "import json,sys; d=json.load(sys.stdin)['data']; print(d[0]['id'] if d else '')")
+  | python -c "import json,sys; s=sys.stdin.read().strip(); d=json.loads(s)['data'] if s else []; print(d[0]['id'] if d else '')")
 if [ -z "$SUBNET_ID" ]; then
   SUBNET_ID=$(oci network subnet create -c "$COMPARTMENT_ID" --vcn-id "$VCN_ID" \
     --cidr-block 10.0.0.0/24 --display-name archon-subnet --wait-for-state AVAILABLE \
@@ -66,7 +66,7 @@ echo "== Image (Ubuntu 24.04 aarch64) =="
 IMAGE_ID=$(oci compute image list -c "$COMPARTMENT_ID" \
   --operating-system "Canonical Ubuntu" --operating-system-version "24.04" \
   --shape "VM.Standard.A1.Flex" --sort-by TIMECREATED --sort-order DESC \
-  | python -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])")
+  | python -c "import json,sys; s=sys.stdin.read().strip(); d=json.loads(s)['data'] if s else []; print(d[0]['id'] if d else '')")
 echo "Image: $IMAGE_ID"
 
 ADS=$(oci iam availability-domain list -c "$COMPARTMENT_ID" \
