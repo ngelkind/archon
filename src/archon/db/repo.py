@@ -239,6 +239,138 @@ def context_clear(db: Db, chat_pk: int, persona_id: int | None = None) -> None:
     )
 
 
+# --- pending actions (the confirm gate) -------------------------------------
+
+def pending_action_create(
+    db: Db, *, kind: str, payload_json: str, chat_pk: int | None, expires_at: str
+) -> int:
+    cur = db.execute(
+        "INSERT INTO pending_actions (kind, payload_json, chat_pk, expires_at) "
+        "VALUES (?, ?, ?, ?)",
+        (kind, payload_json, chat_pk, expires_at),
+    )
+    return int(cur.lastrowid)
+
+
+def pending_action_get(db: Db, action_id: int) -> sqlite3.Row | None:
+    return db.query_one("SELECT * FROM pending_actions WHERE id = ?", (action_id,))
+
+
+def pending_action_claim(db: Db, action_id: int, status: str) -> bool:
+    """Atomic single-use transition out of 'pending'. Returns True for exactly
+    one caller — whichever channel (phone / Telegram / push) gets there first;
+    every other caller sees False and reports 'already handled'."""
+    cur = db.execute(
+        "UPDATE pending_actions SET status = ? WHERE id = ? AND status = 'pending'",
+        (status, action_id),
+    )
+    return cur.rowcount == 1
+
+
+def pending_action_expire(db: Db, action_id: int) -> None:
+    db.execute(
+        "UPDATE pending_actions SET status = 'expired' WHERE id = ? AND status = 'pending'",
+        (action_id,),
+    )
+
+
+def pending_action_set_owner_msg(db: Db, action_id: int, owner_msg_id: int) -> None:
+    db.execute("UPDATE pending_actions SET owner_msg_id = ? WHERE id = ?",
+               (owner_msg_id, action_id))
+
+
+def pending_action_list(db: Db, status: str = "pending", limit: int = 50) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT * FROM pending_actions WHERE status = ? ORDER BY id DESC LIMIT ?",
+        (status, limit),
+    )
+
+
+# --- read projections for the control API -----------------------------------
+
+def setting_all(db: Db) -> list[sqlite3.Row]:
+    return db.query("SELECT key, value_json FROM settings ORDER BY key")
+
+
+def contact_list(db: Db, limit: int = 500) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT name, phone, source FROM contacts ORDER BY name LIMIT ?", (limit,)
+    )
+
+
+def contact_counts(db: Db) -> sqlite3.Row | None:
+    return db.query_one(
+        "SELECT COUNT(*) AS entries, COUNT(DISTINCT phone) AS unique_numbers FROM contacts"
+    )
+
+
+def schedule_list(db: Db, limit: int = 50) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT s.id, s.platform, s.chat_pk, c.chat_id, c.name, s.text, s.due_at, "
+        "s.status FROM scheduled_messages s JOIN chats c ON c.id = s.chat_pk "
+        "ORDER BY s.id DESC LIMIT ?",
+        (limit,),
+    )
+
+
+# --- api devices / pairing --------------------------------------------------
+
+def api_device_create(
+    db: Db, *, name: str | None, token_hash: str,
+    device_pubkey: str | None = None, push_endpoint: str | None = None,
+) -> int:
+    cur = db.execute(
+        "INSERT INTO api_devices (name, token_hash, device_pubkey, push_endpoint) "
+        "VALUES (?, ?, ?, ?)",
+        (name, token_hash, device_pubkey, push_endpoint),
+    )
+    return int(cur.lastrowid)
+
+
+def api_device_by_token_hash(db: Db, token_hash: str) -> sqlite3.Row | None:
+    """A live (non-revoked) device for this bearer hash, or None."""
+    return db.query_one(
+        "SELECT * FROM api_devices WHERE token_hash = ? AND revoked_at IS NULL",
+        (token_hash,),
+    )
+
+
+def api_device_touch(db: Db, device_id: int) -> None:
+    db.execute("UPDATE api_devices SET last_seen_at = ? WHERE id = ?", (_now(), device_id))
+
+
+def api_device_revoke(db: Db, device_id: int) -> None:
+    db.execute(
+        "UPDATE api_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        (_now(), device_id),
+    )
+
+
+def api_device_list(db: Db) -> list[sqlite3.Row]:
+    return db.query("SELECT * FROM api_devices ORDER BY created_at DESC")
+
+
+def api_pair_code_create(db: Db, *, code_hash: str, expires_at: str) -> None:
+    db.execute(
+        "INSERT INTO api_pair_codes (code_hash, expires_at) VALUES (?, ?) "
+        "ON CONFLICT(code_hash) DO UPDATE SET "
+        "expires_at = excluded.expires_at, used_at = NULL",
+        (code_hash, expires_at),
+    )
+
+
+def api_pair_code_consume(db: Db, code_hash: str) -> bool:
+    """Single-use redemption: atomically mark the code used iff it is unused and
+    unexpired. Returns True exactly once per valid code (whichever caller wins)."""
+    now = _now()
+    cur = db.execute(
+        "UPDATE api_pair_codes SET used_at = ? "
+        "WHERE code_hash = ? AND used_at IS NULL AND expires_at >= ?",
+        (now, code_hash, now),
+    )
+    return cur.rowcount == 1
+
+
 # --- audit ------------------------------------------------------------------
 
 def audit_add(db: Db, actor: str, action: str, detail: dict[str, Any] | None = None) -> None:

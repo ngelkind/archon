@@ -20,6 +20,8 @@ from aiogram.types import Message
 from ...db import repo
 from ...runtime import Runtime
 
+_PAIR_TTL_MINUTES = 10
+
 
 def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
     bot = Bot(
@@ -105,6 +107,30 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             report = f"self-test crashed: {type(exc).__name__}: {exc}"
         await message.answer(html.escape(report))
 
+    @dp.message(Command("pair"))
+    async def cmd_pair(message: Message) -> None:
+        if not is_owner(message):
+            return
+        from datetime import UTC, datetime, timedelta
+
+        from ...api.security import hash_secret, mint_pair_code
+
+        code = mint_pair_code()
+        expires = (datetime.now(UTC) + timedelta(minutes=_PAIR_TTL_MINUTES)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        repo.api_pair_code_create(
+            rt.db,
+            code_hash=hash_secret(rt.settings.api_token_pepper, code),
+            expires_at=expires,
+        )
+        rt.audit.note("api_pair_code_issued")
+        await message.answer(
+            f"<b>Device pairing code:</b> <code>{code}</code>\n"
+            f"Enter it in the Archon app within {_PAIR_TTL_MINUTES} minutes to link "
+            "this device. One-time use; the code is stored only as a hash."
+        )
+
     @dp.message(Command("ask"))
     async def cmd_ask(message: Message) -> None:
         if not is_owner(message):
@@ -189,6 +215,7 @@ async def run(rt: Runtime) -> None:
             BotCommand(command="ask", description="Ask the agent a question"),
             BotCommand(command="costs", description="LLM spend (day/week/month)"),
             BotCommand(command="download", description="Download a video by URL"),
+            BotCommand(command="pair", description="Pair a new control device"),
             BotCommand(command="selftest", description="Run internal self-tests"),
             BotCommand(command="help", description="What Archon can do"),
         ])

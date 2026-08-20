@@ -1,0 +1,21 @@
+# ntfy server config for Archon push. Bound to the WireGuard interface ONLY,
+# so — like the API — it is unreachable except from a paired device over the
+# tunnel. Push payloads are content-free (see src/archon/api/push.py); this
+# broker never sees message text, only opaque action ids.
+#
+# Installed to /etc/ntfy/server.yml by setup_ntfy.sh.
+
+# Listen on the wg0 address, not 0.0.0.0 — never publicly reachable.
+listen-http: "10.13.13.1:8080"
+
+# The app registers its UnifiedPush topic against this base-url.
+base-url: "http://10.13.13.1:8080"
+
+behind-proxy: false
+
+# Single-user, tunnel-only: keep it minimal. No attachments, short cache so
+# nothing lingers on disk. Tighten with auth-file + auth-default-access: deny-all
+# if you later want per-topic ACLs (not required when only wg peers can connect).
+cache-file: "/var/lib/ntfy/cache.db"
+cache-duration: "12h"
+attachment-cache-dir: ""

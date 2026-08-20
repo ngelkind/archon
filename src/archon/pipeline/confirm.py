@@ -2,9 +2,18 @@
 
 Any sensitive action (send a message, create an event from inbound content,
 dangerous setting change) can be routed through here: a row is written to
-pending_actions and the owner gets an Approve/Reject keyboard on the control
-bot. Ownership is enforced (only the owner's callback is accepted), rows
-expire, and every decision is audited.
+pending_actions and the owner is asked. Ownership is enforced (only the owner's
+callback is accepted), rows expire, and every decision is audited.
+
+Three transport-neutral seams, so the phone and the Telegram bot are equal peers:
+
+* :func:`resolve_action` — the single-use decision path (claim + executor).
+  The claim is one atomic UPDATE, so whichever channel decides first wins and
+  every other channel is told "already handled".
+* **Notifier registry** — :func:`request_confirmation` writes the row, then asks
+  each registered notifier to tell the owner. The Telegram keyboard is the
+  built-in notifier; push (Part C) registers alongside it.
+* ``rt.events`` — ``approval.pending`` / ``approval.resolved`` for /stream.
 
 Action executors are registered by the modules that own them:
     confirm.register_executor("event.create", fn)
@@ -15,6 +24,7 @@ from __future__ import annotations
 
 import html
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable
 
@@ -27,11 +37,54 @@ from ..runtime import Runtime
 Executor = Callable[[Runtime, dict[str, Any]], Awaitable[str]]
 _EXECUTORS: dict[str, Executor] = {}
 
+# (rt, action_id, kind, description, payload) -> None
+Notifier = Callable[[Runtime, int, str, str, dict[str, Any]], Awaitable[None]]
+_NOTIFIERS: list[Notifier] = []
+
 _TTL_MINUTES = 60
 
 
 def register_executor(kind: str, fn: Executor) -> None:
     _EXECUTORS[kind] = fn
+
+
+def register_notifier(fn: Notifier) -> None:
+    """Add a channel that tells the owner about a new pending action. The
+    Telegram keyboard is built in; push adds itself here."""
+    _NOTIFIERS.append(fn)
+
+
+@dataclass(slots=True)
+class Outcome:
+    """Result of a decision. ``status`` is 'approved' | 'rejected' | 'expired' |
+    'already' | 'unknown'. ``ok`` is False when the action was claimed but its
+    executor raised."""
+
+    status: str
+    detail: str = ""
+    ok: bool = True
+
+
+async def _telegram_notifier(
+    rt: Runtime, action_id: int, kind: str, description: str, payload: dict[str, Any]
+) -> None:
+    bot: Bot | None = rt.send_bot()  # type: ignore[assignment]
+    if bot is None:
+        rt.audit.note("confirm_no_control_bot", action_id=action_id)
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Approve", callback_data=f"pa:{action_id}:ok"),
+        InlineKeyboardButton(text="❌ Reject", callback_data=f"pa:{action_id}:no"),
+    ]])
+    sent = await bot.send_message(
+        rt.settings.telegram_owner_id,
+        f"<b>Confirm: {html.escape(kind)}</b>\n{html.escape(description)}",
+        reply_markup=keyboard,
+    )
+    repo.pending_action_set_owner_msg(rt.db, action_id, sent.message_id)
+
+
+_NOTIFIERS.append(_telegram_notifier)
 
 
 async def request_confirmation(
@@ -42,28 +95,18 @@ async def request_confirmation(
     expires = (datetime.now(UTC) + timedelta(minutes=_TTL_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
-    cur = rt.db.execute(
-        "INSERT INTO pending_actions (kind, payload_json, chat_pk, expires_at) "
-        "VALUES (?, ?, ?, ?)",
-        (kind, json.dumps(payload, ensure_ascii=False), chat_pk, expires),
+    action_id = repo.pending_action_create(
+        rt.db, kind=kind, payload_json=json.dumps(payload, ensure_ascii=False),
+        chat_pk=chat_pk, expires_at=expires,
     )
-    action_id = int(cur.lastrowid)
-
-    bot: Bot | None = rt.send_bot()  # type: ignore[assignment]
-    if bot is None:
-        rt.audit.note("confirm_no_control_bot", action_id=action_id)
-        return action_id
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Approve", callback_data=f"pa:{action_id}:ok"),
-        InlineKeyboardButton(text="❌ Reject", callback_data=f"pa:{action_id}:no"),
-    ]])
-    sent = await bot.send_message(
-        rt.settings.telegram_owner_id,
-        f"<b>Confirm: {html.escape(kind)}</b>\n{html.escape(description)}",
-        reply_markup=keyboard,
-    )
-    rt.db.execute("UPDATE pending_actions SET owner_msg_id = ? WHERE id = ?",
-                  (sent.message_id, action_id))
+    rt.events.publish("approval.pending", action_id=action_id, action_kind=kind,
+                      description=description, chat_pk=chat_pk)
+    for notifier in tuple(_NOTIFIERS):
+        try:
+            await notifier(rt, action_id, kind, description, payload)
+        except Exception as exc:  # noqa: BLE001 — one bad channel must not lose the action
+            rt.audit.note("confirm_notifier_failed", action_id=action_id,
+                          error=repr(exc)[:200])
     rt.audit.note("confirm_requested", action_id=action_id, kind=kind)
     return action_id
 
@@ -73,6 +116,52 @@ async def _execute(rt: Runtime, kind: str, payload: dict[str, Any]) -> str:
     if executor is None:
         return f"no executor registered for {kind}"
     return await executor(rt, payload)
+
+
+async def resolve_action(
+    rt: Runtime, action_id: int, verdict: str, *, actor: str
+) -> Outcome:
+    """Approve (``verdict == 'ok'``) or reject a pending action exactly once.
+
+    Safe under concurrency from Telegram, the app, and a push action: the claim
+    is a single atomic UPDATE, so only one caller ever runs the executor.
+    """
+    row = repo.pending_action_get(rt.db, action_id)
+    if row is None:
+        return Outcome("unknown", "Already handled or unknown.", ok=False)
+    if row["status"] != "pending":
+        return Outcome("already", "Already handled or unknown.", ok=False)
+    if row["expires_at"] < datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"):
+        repo.pending_action_expire(rt.db, action_id)
+        rt.events.publish("approval.resolved", action_id=action_id,
+                          action_kind=row["kind"], status="expired", actor=actor)
+        return Outcome("expired", "Expired.", ok=False)
+
+    approved = verdict == "ok"
+    if not repo.pending_action_claim(
+        rt.db, action_id, "approved" if approved else "rejected"
+    ):
+        return Outcome("already", "Already handled or unknown.", ok=False)
+
+    if not approved:
+        rt.audit.note("confirm_rejected", action_id=action_id, kind=row["kind"],
+                      actor=actor)
+        rt.events.publish("approval.resolved", action_id=action_id,
+                          action_kind=row["kind"], status="rejected", actor=actor)
+        return Outcome("rejected", "Rejected")
+
+    rt.audit.note("confirm_approved", action_id=action_id, kind=row["kind"], actor=actor)
+    try:
+        result = await _execute(rt, row["kind"], json.loads(row["payload_json"]))
+        outcome = Outcome("approved", result)
+    except Exception as exc:  # noqa: BLE001 — a failed executor must still close the action
+        rt.audit.note("confirm_execute_failed", action_id=action_id,
+                      error=repr(exc)[:300])
+        outcome = Outcome("approved", f"{type(exc).__name__}: {exc}", ok=False)
+    rt.events.publish("approval.resolved", action_id=action_id,
+                      action_kind=row["kind"], status="approved", ok=outcome.ok,
+                      actor=actor)
+    return outcome
 
 
 def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
@@ -88,51 +177,35 @@ def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
             await query.answer("Malformed callback.")
             return
         # Acknowledge the tap NOW. Telegram invalidates a callback query after
-        # ~15s, but _execute (a send/revoke, or a loop busy with big agent calls)
-        # can take longer — answering first prevents the "query is too old" crash
-        # that previously swallowed the action's feedback.
+        # ~15s, but the executor (a send/revoke, or a loop busy with big agent
+        # calls) can take longer — answering first prevents the "query is too
+        # old" crash that previously swallowed the action's feedback.
         try:
             await query.answer()
         except Exception:  # noqa: BLE001
             pass
 
-        # Ownership + single-use enforced in SQL (calibot pattern).
-        row = rt.db.query_one(
-            "SELECT * FROM pending_actions WHERE id = ? AND status = 'pending'",
-            (action_id,),
-        )
-        if row is None:
-            await query.answer("Already handled or unknown.")
+        outcome = await resolve_action(rt, action_id, verdict, actor="telegram")
+        # No second query.answer() here: the early ack above already consumed
+        # this callback query, so answering again only logs an error.
+        if outcome.status in ("unknown", "already"):
             return
-        if row["expires_at"] < datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"):
-            rt.db.execute("UPDATE pending_actions SET status = 'expired' WHERE id = ?",
-                          (action_id,))
-            await query.answer("Expired.")
+        if outcome.status == "expired":
             if query.message:
                 await query.message.edit_text(query.message.html_text + "\n\n⏰ Expired")
             return
 
-        if verdict == "ok":
-            rt.db.execute("UPDATE pending_actions SET status = 'approved' WHERE id = ?",
-                          (action_id,))
-            rt.audit.note("confirm_approved", action_id=action_id, kind=row["kind"])
-            try:
-                result = await _execute(rt, row["kind"], json.loads(row["payload_json"]))
-                outcome = f"✅ Done: {html.escape(result)}"
-            except Exception as exc:  # noqa: BLE001
-                outcome = f"⚠️ Failed: {html.escape(f'{type(exc).__name__}: {exc}')}"
-                rt.audit.note("confirm_execute_failed", action_id=action_id,
-                              error=repr(exc)[:300])
+        if outcome.status == "rejected":
+            text = "❌ Rejected"
+        elif outcome.ok:
+            text = f"✅ Done: {html.escape(outcome.detail)}"
         else:
-            rt.db.execute("UPDATE pending_actions SET status = 'rejected' WHERE id = ?",
-                          (action_id,))
-            rt.audit.note("confirm_rejected", action_id=action_id, kind=row["kind"])
-            outcome = "❌ Rejected"
+            text = f"⚠️ Failed: {html.escape(outcome.detail)}"
 
         if query.message:
             try:
                 await query.message.edit_text(
-                    (query.message.html_text or "") + f"\n\n{outcome}"
+                    (query.message.html_text or "") + f"\n\n{text}"
                 )
             except Exception:  # noqa: BLE001 — edit failures must not break the flow
                 pass
