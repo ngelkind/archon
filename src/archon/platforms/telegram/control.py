@@ -92,6 +92,19 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
         await message.answer("⬇️ downloading…")
         await download_cmd.handle_control(rt, message.bot, message.chat.id, url)
 
+    @dp.message(Command("selftest"))
+    async def cmd_selftest(message: Message) -> None:
+        if not is_owner(message):
+            return
+        which = (message.text or "").removeprefix("/selftest").strip() or "all"
+        await message.answer(f"Running self-test ({which})… this sends to the test targets.")
+        from ...selftest import run_selftest
+        try:
+            report = await run_selftest(rt, which)
+        except Exception as exc:  # noqa: BLE001
+            report = f"self-test crashed: {type(exc).__name__}: {exc}"
+        await message.answer(html.escape(report))
+
     @dp.message(Command("ask"))
     async def cmd_ask(message: Message) -> None:
         if not is_owner(message):
