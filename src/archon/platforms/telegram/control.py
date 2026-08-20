@@ -142,6 +142,15 @@ async def run(rt: Runtime) -> None:
     confirm.register_handlers(dp, rt)
     business.register(dp, rt)
     rt.clients["control_bot"] = bot
+    # A SEPARATE bot instance (same token) dedicated to out-of-band sends
+    # (log-channel cards, capture, owner alerts). The polling bot closes its
+    # aiohttp session as part of start_polling's lifecycle, which breaks
+    # sends made from other tasks ("Connector is closed"); this one is never
+    # polled, so its session stays open.
+    rt.clients["notifier"] = Bot(
+        token=rt.settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode="HTML"),
+    )
     rt.health["control_bot"] = "polling"
     me = await bot.get_me()
     rt.audit.note("control_bot_started", username=me.username)

@@ -31,3 +31,8 @@ class Runtime:
 
     def uptime_s(self) -> int:
         return int(time.time() - self.started_at)
+
+    def send_bot(self):
+        """Bot instance for out-of-band sends (log cards, capture, alerts).
+        Prefers the dedicated notifier (open session) over the polling bot."""
+        return self.clients.get("notifier") or self.clients.get("control_bot")

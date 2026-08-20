@@ -196,7 +196,7 @@ def register(registry: Registry) -> None:
         scopes=("owner", "inbound"),
     )
     async def tg_notify_owner(ctx: ToolContext, text: str) -> str:
-        bot = ctx.rt.clients.get("control_bot")
+        bot = ctx.rt.send_bot()
         if bot is None:
             return json.dumps({"error": "control bot not running"})
         await bot.send_message(ctx.rt.settings.telegram_owner_id, text[:4000],  # type: ignore[attr-defined]

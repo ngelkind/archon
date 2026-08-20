@@ -128,7 +128,22 @@ async def _gmail_send(rt: Runtime) -> str:
     return f"sent email to {addr} id={mid}"
 
 
+async def _notify_logchannel(rt: Runtime) -> str:
+    """Verify the in-process notifier bot can post to the log channel (the
+    path that was failing with 'Connector is closed')."""
+    from .logging_.capture import _log_channel
+    ch = _log_channel(rt)
+    if not ch:
+        raise RuntimeError("no log channel configured")
+    bot = rt.send_bot()
+    if bot is None:
+        raise RuntimeError("no send bot")
+    await bot.send_message(ch, "Archon self-test — in-process log-channel send ✅")
+    return f"posted to log channel {ch}"
+
+
 _STEPS: dict[str, Any] = {
+    "notify": _notify_logchannel,
     "wa_text": _wa_text,
     "wa_video": _wa_video,
     "wa_download_cmd": _wa_download_cmd,

@@ -31,7 +31,7 @@ def _to_jid(raw: str) -> Any:
 
 
 async def _notify(rt: Runtime, text: str) -> None:
-    bot = rt.clients.get("control_bot")
+    bot = rt.send_bot()
     if bot is not None:
         try:
             await bot.send_message(rt.settings.telegram_owner_id, text)  # type: ignore[attr-defined]

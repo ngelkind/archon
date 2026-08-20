@@ -44,7 +44,7 @@ async def send_capture(rt: Runtime, *, platform: str, chat_id: str,
                        local_path: str) -> None:
     """Send a captured one-time media file to the log channel."""
     channel = _log_channel(rt)
-    bot = rt.clients.get("control_bot")
+    bot = rt.send_bot()
     if channel is None or bot is None:
         rt.audit.note("capture_no_channel", platform=platform, chat=chat_id)
         return

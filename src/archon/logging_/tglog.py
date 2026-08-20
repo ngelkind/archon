@@ -65,7 +65,7 @@ async def log_change(rt: Runtime, msg: InboundMessage,
     if chat_row is None or not chat_row["log_deletes"]:
         return
     channel = _channel_id(rt)
-    bot = rt.clients.get("control_bot")
+    bot = rt.send_bot()
     if channel is None or bot is None:
         return
 

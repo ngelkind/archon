@@ -49,7 +49,7 @@ async def request_confirmation(
     )
     action_id = int(cur.lastrowid)
 
-    bot: Bot | None = rt.clients.get("control_bot")  # type: ignore[assignment]
+    bot: Bot | None = rt.send_bot()  # type: ignore[assignment]
     if bot is None:
         rt.audit.note("confirm_no_control_bot", action_id=action_id)
         return action_id
