@@ -62,7 +62,19 @@ class Settings(BaseSettings):
     # Server-side pepper mixed into every device-token / pair-code hash so a
     # stolen DB yields no usable tokens. MUST be overridden with a strong random
     # value in production (API_TOKEN_PEPPER); the default is a dev placeholder.
+    # Also peppers multi-tenant refresh-token hashes (see api/accounts.py).
     api_token_pepper: str = "dev-insecure-pepper-change-me"
+
+    # --- Multi-tenant accounts (product mode; off by default so the live
+    # single-user deploy is unaffected). When on, server.py mounts /auth/*. ---
+    multitenant_enabled: bool = False
+    # HS256 signing key for short-lived access-token JWTs. MUST be overridden
+    # with a strong random value in production (JWT_SECRET); dev placeholder.
+    jwt_secret: str = "dev-insecure-jwt-secret-change-me"
+    # Access tokens are short-lived (re-minted via refresh); refresh tokens are
+    # long-lived and single-use-rotated. Both overridable via env.
+    access_token_ttl_minutes: int = 15
+    refresh_token_ttl_days: int = 30
 
     # --- Push (self-hosted ntfy / UnifiedPush; off by default) ---
     # Base URL of the ntfy instance, e.g. http://10.8.0.1:8080 — a tunnel-only

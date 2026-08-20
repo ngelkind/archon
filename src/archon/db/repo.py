@@ -371,6 +371,76 @@ def api_pair_code_consume(db: Db, code_hash: str) -> bool:
     return cur.rowcount == 1
 
 
+# --- multi-tenant accounts (product mode) -----------------------------------
+
+def user_create(
+    db: Db, *, email: str, password_hash: str, display_name: str | None
+) -> int:
+    """Insert a new account; caller normalizes ``email`` (lowercase) and has
+    already checked for a duplicate. Raises sqlite3.IntegrityError on a racing
+    duplicate (UNIQUE email), which the router maps to a 409."""
+    cur = db.execute(
+        "INSERT INTO users (email, password_hash, display_name) VALUES (?, ?, ?)",
+        (email, password_hash, display_name),
+    )
+    return int(cur.lastrowid)
+
+
+def user_by_email(db: Db, email: str) -> sqlite3.Row | None:
+    """Live (non-disabled) account for this normalized email, or None."""
+    return db.query_one(
+        "SELECT * FROM users WHERE email = ? AND disabled_at IS NULL", (email,)
+    )
+
+
+def user_by_id(db: Db, user_id: int) -> sqlite3.Row | None:
+    """Live (non-disabled) account by id, or None."""
+    return db.query_one(
+        "SELECT * FROM users WHERE id = ? AND disabled_at IS NULL", (user_id,)
+    )
+
+
+def user_touch_login(db: Db, user_id: int) -> None:
+    db.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (_now(), user_id))
+
+
+def refresh_token_create(
+    db: Db, *, token_hash: str, user_id: int, expires_at: str
+) -> None:
+    db.execute(
+        "INSERT INTO refresh_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+        (token_hash, user_id, expires_at),
+    )
+
+
+def refresh_token_get(db: Db, token_hash: str) -> sqlite3.Row | None:
+    """The stored row for this hash (live or not); the caller checks
+    revoked_at / expires_at so it can tell 'unknown' from 'reused/expired'."""
+    return db.query_one(
+        "SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
+    )
+
+
+def refresh_token_revoke(db: Db, token_hash: str) -> bool:
+    """Atomic single-use revoke. Returns True exactly once per live token; a
+    second call (token reuse / double logout) returns False."""
+    cur = db.execute(
+        "UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+        (_now(), token_hash),
+    )
+    return cur.rowcount == 1
+
+
+def refresh_tokens_revoke_all(db: Db, user_id: int) -> int:
+    """Revoke every live refresh token for a user (e.g. reuse detected / global
+    logout). Returns the number revoked."""
+    cur = db.execute(
+        "UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+        (_now(), user_id),
+    )
+    return int(cur.rowcount)
+
+
 # --- audit ------------------------------------------------------------------
 
 def audit_add(db: Db, actor: str, action: str, detail: dict[str, Any] | None = None) -> None:

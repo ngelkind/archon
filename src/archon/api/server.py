@@ -39,6 +39,12 @@ def build_app(rt: Runtime) -> FastAPI:
     app.include_router(costs.router)
     app.include_router(approvals.router)
     app.include_router(stream.router)
+    # Multi-tenant product surface (/auth/*): mounted only when enabled, so the
+    # live single-user deploy is untouched and argon2/jwt never load there. The
+    # import is local for the same reason.
+    if rt.settings.multitenant_enabled:
+        from .routers import accounts as accounts_router
+        app.include_router(accounts_router.router)
     return app
 
 

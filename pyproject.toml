@@ -25,6 +25,10 @@ dependencies = [
     # interface only (never 0.0.0.0). Only imported when api_enabled is set.
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # Multi-tenant accounts (product mode): argon2id password hashing + HS256
+    # JWT access tokens. Only exercised when multitenant_enabled is set.
+    "argon2-cffi>=23.1",
+    "pyjwt>=2.9",
     # Media downloads (YouTube/TikTok/Instagram/X/… ~1800 sites) — pure Python,
     # actively maintained. Needs ffmpeg on the host for some format merges.
     "yt-dlp>=2025.1.1",
