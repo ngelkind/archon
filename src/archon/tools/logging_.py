@@ -69,17 +69,18 @@ def register(registry: Registry) -> None:
     )
     async def deleted_messages_query(ctx: ToolContext, platform: str = "",
                                      limit: int = 20) -> str:
-        sql = ("SELECT platform, chat_id, sender_name, sender_id, ts, text, "
-               "edited_text, deleted_at, edited_at FROM messages "
-               "WHERE (deleted_at IS NOT NULL OR edited_at IS NOT NULL)")
+        where = "(deleted_at IS NOT NULL OR edited_at IS NOT NULL)"
         params: list = []
         if platform:
-            sql += " AND platform = ?"
+            where += " AND platform = ?"
             params.append(platform)
-        sql += " ORDER BY id DESC LIMIT ?"
+        where += " ORDER BY id DESC LIMIT ?"
         params.append(min(int(limit), 50))
-        rows = ctx.rt.db.query(sql, tuple(params))
-        return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
+        rows = repo.message_search(ctx.rt.db, where, tuple(params))
+        keep = ("platform", "chat_id", "sender_name", "sender_id", "ts", "text",
+                "edited_text", "deleted_at", "edited_at")
+        return json.dumps([{k: r[k] for k in keep} for r in rows],
+                          ensure_ascii=False, default=str)
 
     @registry.tool(
         "audit_query",

@@ -73,9 +73,7 @@ async def _wa_whitelisted_via_counterpart(rt: Runtime, msg: InboundMessage) -> b
         return False
     alt_row = repo.chat_get(rt.db, "wa", alt)
     if alt_row is not None and alt_row["is_whitelisted"]:
-        rt.db.execute(
-            "UPDATE chats SET is_whitelisted = 1 WHERE platform = 'wa' AND chat_id = ?",
-            (msg.chat_id,))
+        repo.chat_set_whitelisted_by_chat_id(rt.db, "wa", msg.chat_id)
         rt.audit.note("wa_whitelist_linked", lid=msg.chat_id, phone=alt)
         return True
     return False
@@ -206,10 +204,9 @@ async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
             continue
         due = compute_due(delay_json) if delay_json else None
         if due is not None and chat_row is not None:
-            rt.db.execute(
-                "INSERT INTO pending_replies (chat_pk, draft_text, due_at, reply_to) "
-                "VALUES (?, ?, ?, ?)",
-                (chat_row["id"], reply, due.strftime("%Y-%m-%d %H:%M:%S"), m.msg_id))
+            repo.pending_reply_create(
+                rt.db, chat_pk=chat_row["id"], draft_text=reply,
+                due_at=due.strftime("%Y-%m-%d %H:%M:%S"), reply_to=m.msg_id)
         else:
             try:
                 await _send_reply_now(rt, first.platform, first.chat_id,
@@ -258,7 +255,7 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
 
     persona_block = ""
     if persona_id is not None:
-        persona = rt.db.query_one("SELECT * FROM personas WHERE id = ?", (persona_id,))
+        persona = repo.persona_by_id(rt.db, persona_id)
         if persona:
             persona_block = f"\nPersona for replies in this chat:\n{persona['system_prompt']}\n"
 

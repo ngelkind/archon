@@ -12,6 +12,7 @@ import json
 from datetime import UTC, datetime
 
 from ..db import repo
+from ..db.tenancy import TenantScope
 from ..pipeline.confirm import _execute  # same executor registry as the confirm gate
 from ..runtime import Runtime
 
@@ -25,12 +26,11 @@ def _now() -> str:
 
 
 async def _fire_scheduled(rt: Runtime) -> None:
-    rows = rt.db.query(
-        "SELECT s.*, c.platform AS c_platform, c.chat_id AS c_chat_id, c.name AS c_name "
-        "FROM scheduled_messages s JOIN chats c ON c.id = s.chat_pk "
-        "WHERE s.status = 'pending' AND s.due_at <= ?", (_now(),),
-    )
+    # Process-wide: every tenant's due messages, each written back under its own
+    # tenant scope (see repo.schedule_due_all_tenants).
+    rows = repo.schedule_due_all_tenants(rt.db, _now())
     for row in rows:
+        scope = TenantScope(rt.db, row["tenant_id"])
         kind = _KIND_FOR_PLATFORM.get(row["platform"])
         try:
             if kind == "email.send":
@@ -43,26 +43,17 @@ async def _fire_scheduled(rt: Runtime) -> None:
                            "text": row["text"], "chat_name": row["c_name"],
                            "image_path": row["media_path"]}
             result = await _execute(rt, kind or "", payload)
-            rt.db.execute(
-                "UPDATE scheduled_messages SET status = 'sent', result = ? WHERE id = ?",
-                (str(result)[:300], row["id"]),
-            )
+            repo.schedule_set_status(scope, row["id"], "sent", str(result)[:300])
             rt.audit.note("scheduled_sent", id=row["id"], platform=row["platform"])
         except Exception as exc:  # noqa: BLE001
-            rt.db.execute(
-                "UPDATE scheduled_messages SET status = 'failed', result = ? WHERE id = ?",
-                (repr(exc)[:300], row["id"]),
-            )
+            repo.schedule_set_status(scope, row["id"], "failed", repr(exc)[:300])
             rt.audit.note("scheduled_failed", id=row["id"], error=repr(exc)[:200])
 
 
 async def _fire_pending_replies(rt: Runtime) -> None:
-    rows = rt.db.query(
-        "SELECT p.*, c.platform AS c_platform, c.chat_id AS c_chat_id, c.name AS c_name "
-        "FROM pending_replies p JOIN chats c ON c.id = p.chat_pk "
-        "WHERE p.status = 'pending' AND p.due_at <= ?", (_now(),),
-    )
+    rows = repo.pending_reply_due_all_tenants(rt.db, _now())
     for row in rows:
+        scope = TenantScope(rt.db, row["tenant_id"])
         kind = _KIND_FOR_PLATFORM.get(row["c_platform"])
         if row["c_platform"] == "tg" and row["c_chat_id"].startswith("-"):
             kind = "tg.send_group"
@@ -71,12 +62,10 @@ async def _fire_pending_replies(rt: Runtime) -> None:
                        "text": row["draft_text"], "chat_name": row["c_name"],
                        "reply_to": row["reply_to"]}
             await _execute(rt, kind or "", payload)
-            rt.db.execute("UPDATE pending_replies SET status = 'sent' WHERE id = ?",
-                          (row["id"],))
+            repo.pending_reply_set_status(scope, row["id"], "sent")
             rt.audit.note("delayed_reply_sent", id=row["id"])
         except Exception as exc:  # noqa: BLE001
-            rt.db.execute("UPDATE pending_replies SET status = 'cancelled' WHERE id = ?",
-                          (row["id"],))
+            repo.pending_reply_set_status(scope, row["id"], "cancelled")
             rt.audit.note("delayed_reply_failed", id=row["id"], error=repr(exc)[:200])
 
 

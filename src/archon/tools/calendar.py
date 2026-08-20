@@ -59,12 +59,12 @@ async def _create_event_executor(rt: Runtime, payload: dict[str, Any]) -> str:
         location=payload.get("location"),
         rrule=payload.get("rrule"),
     )
-    rt.db.execute(
-        "INSERT INTO events_created (chat_pk, source_msg_id, gcal_event_id, calendar_id, "
-        "title, start_ts, end_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (payload.get("chat_pk"), payload.get("source_msg_id"), created["id"],
-         payload.get("calendar_id") or _default_calendar(rt), payload["title"],
-         payload["start_iso"], payload.get("end_iso")),
+    repo.event_created_add(
+        rt.db, chat_pk=payload.get("chat_pk"),
+        source_msg_id=payload.get("source_msg_id"), gcal_event_id=created["id"],
+        calendar_id=payload.get("calendar_id") or _default_calendar(rt),
+        title=payload["title"], start_ts=payload["start_iso"],
+        end_ts=payload.get("end_iso"),
     )
     return f"event '{payload['title']}' at {payload['start_iso']} — {created['htmlLink']}"
 
@@ -193,10 +193,7 @@ def register(registry: Registry) -> None:
             _client(ctx.rt).delete_event,
             calendar_id=_default_calendar(ctx.rt), event_id=event_id,
         )
-        ctx.rt.db.execute(
-            "UPDATE events_created SET status = 'cancelled' WHERE gcal_event_id = ?",
-            (event_id,),
-        )
+        repo.event_created_mark_cancelled(ctx.rt.db, event_id)
         return json.dumps({"status": "deleted", "event_id": event_id})
 
     @registry.tool(

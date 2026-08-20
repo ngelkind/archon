@@ -208,7 +208,7 @@ def register(registry: Registry) -> None:
     async def settings_get(ctx: ToolContext, key: str = "") -> str:
         if key:
             return json.dumps({key: repo.setting_get(ctx.rt.db, key)}, ensure_ascii=False)
-        rows = ctx.rt.db.query("SELECT key, value_json FROM settings ORDER BY key")
+        rows = repo.setting_all(ctx.rt.db)
         redacted = {}
         for r in rows:
             redacted[r["key"]] = "•••" if ".key." in r["key"] or r["key"].startswith("llm.key") \

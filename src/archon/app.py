@@ -30,7 +30,7 @@ def build_runtime() -> Runtime:
         )
     db = Db(settings.db_path)
     version = migrate(db)
-    audit = AuditLog(settings.audit_log_path, db, store_content=settings.audit_store_content)
+    audit = AuditLog(settings.audit_log_path, db, store_content=settings.store_audit_content)
     audit.note("startup", schema_version=version)
     rt = Runtime(settings=settings, db=db, audit=audit, bus=Bus())
     _wire_llm_and_tools(rt)

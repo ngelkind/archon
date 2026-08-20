@@ -1,4 +1,14 @@
-"""Shared runtime container passed to every subsystem."""
+"""Shared runtime container passed to every subsystem.
+
+PROCESS-GLOBAL ONLY. Everything here is shared by every tenant: config, the one
+lock-guarded database handle, the LLM router, the tool registry, the event hub,
+and the per-tenant session registry (global object, per-tenant contents).
+
+Anything that belongs to *one user* — their chats, settings, integration
+sessions, agent memory — lives behind a ``tenant.TenantContext``, not here.
+``rt.clients`` is the single-user bot's own platform clients (tenant 1); the
+product path resolves clients through ``rt.sessions`` instead.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +20,7 @@ from .config import Settings
 from .db import Db
 from .events import EventHub
 from .logging_.audit import AuditLog
+from .sessions import SessionRegistry
 
 
 @dataclass
@@ -21,6 +32,8 @@ class Runtime:
     # Best-effort realtime fan-out for API subscribers. Never blocks publishers
     # (see events.py); safe to publish to from any hot path.
     events: EventHub = field(default_factory=EventHub)
+    # Per-tenant integration clients, built lazily and evicted when idle.
+    sessions: SessionRegistry = field(default_factory=SessionRegistry)
     started_at: float = field(default_factory=time.time)
     # Subsystem health, shown by /status: name -> short state string.
     health: dict[str, str] = field(default_factory=dict)

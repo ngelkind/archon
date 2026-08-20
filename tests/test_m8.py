@@ -43,10 +43,10 @@ def test_scheduler_fires_due_messages(tmp_path):
     chat_pk = repo.chat_upsert(rt.db, "wa", "123@s.whatsapp.net", "Test", "private")
     past = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
     future = (datetime.now(UTC) + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-    rt.db.execute("INSERT INTO scheduled_messages (platform, chat_pk, text, due_at) "
-                  "VALUES ('wa', ?, 'due now', ?)", (chat_pk, past))
-    rt.db.execute("INSERT INTO scheduled_messages (platform, chat_pk, text, due_at) "
-                  "VALUES ('wa', ?, 'later', ?)", (chat_pk, future))
+    repo.schedule_create(rt.db, platform="wa", chat_pk=chat_pk, text="due now",
+                         due_at=past)
+    repo.schedule_create(rt.db, platform="wa", chat_pk=chat_pk, text="later",
+                         due_at=future)
 
     asyncio.run(_fire_scheduled(rt))
     assert len(sent) == 1 and sent[0]["text"] == "due now"
@@ -65,8 +65,8 @@ def test_pending_reply_fires(tmp_path):
     confirm.register_executor("wa.send", fake_send)
     chat_pk = repo.chat_upsert(rt.db, "wa", "9@s.whatsapp.net", "P", "private")
     past = (datetime.now(UTC) - timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S")
-    rt.db.execute("INSERT INTO pending_replies (chat_pk, draft_text, due_at) "
-                  "VALUES (?, 'delayed hi', ?)", (chat_pk, past))
+    repo.pending_reply_create(rt.db, chat_pk=chat_pk, draft_text="delayed hi",
+                              due_at=past)
     asyncio.run(_fire_pending_replies(rt))
     assert sent and sent[0]["text"] == "delayed hi"
 

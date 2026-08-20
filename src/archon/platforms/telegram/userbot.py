@@ -196,12 +196,13 @@ async def run(rt: Runtime) -> None:
         for msg_id in event.deleted_ids:
             resolved_chat = chat_id
             if resolved_chat is None:
-                row = rt.db.query_one(
-                    "SELECT chat_id FROM messages WHERE platform = 'tg' AND msg_id = ? "
-                    "AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+                found = repo.message_search(
+                    rt.db,
+                    "platform = 'tg' AND msg_id = ? AND deleted_at IS NULL "
+                    "ORDER BY id DESC LIMIT 1",
                     (str(msg_id),),
                 )
-                resolved_chat = row["chat_id"] if row else None
+                resolved_chat = found[0]["chat_id"] if found else None
             if resolved_chat is None:
                 continue
             await rt.bus.publish(InboundMessage(

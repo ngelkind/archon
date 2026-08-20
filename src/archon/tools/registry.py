@@ -34,6 +34,16 @@ class ToolContext:
     # in inbound scope may only target this chat.
     origin_chat_pk: int | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    # Whose data this run acts on. None means the single-user owner, which is
+    # what every legacy caller gets. Set it and `store` follows, so a tool
+    # written against `ctx.store` is automatically tenant-correct.
+    tenant: Any = None
+
+    @property
+    def store(self):
+        """The database handle a tool should use: this run's tenant scope, or
+        the raw Db (owner-scoped by repo) when no tenant is attached."""
+        return self.tenant.scope if self.tenant is not None else self.rt.db
 
 
 @dataclass(slots=True)

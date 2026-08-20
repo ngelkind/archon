@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from ..db import repo
 from .registry import Registry, ToolContext
 
 
@@ -34,10 +35,9 @@ def register(registry: Registry) -> None:
             return json.dumps({"error": f"token rejected by Telegram: {type(exc).__name__}"})
         finally:
             await bot.session.close()
-        ctx.rt.db.execute(
-            "INSERT INTO sub_bots (token, bot_username, platform_scope) VALUES (?, ?, ?)",
-            (token, me.username or str(me.id), platform_scope),
-        )
+        repo.sub_bot_create(ctx.rt.db, token=token,
+                            bot_username=me.username or str(me.id),
+                            platform_scope=platform_scope)
         return json.dumps({"ok": True, "bot": f"@{me.username}",
                            "platform_scope": platform_scope,
                            "note": "starts polling within ~30s"})
@@ -47,10 +47,11 @@ def register(registry: Registry) -> None:
         "List registered sub-bots.",
     )
     async def subbot_list(ctx: ToolContext) -> str:
-        rows = ctx.rt.db.query(
-            "SELECT id, bot_username, platform_scope, enabled, created_at FROM sub_bots"
-        )
-        return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
+        rows = repo.sub_bot_list(ctx.rt.db)
+        return json.dumps(
+            [{k: r[k] for k in ("id", "bot_username", "platform_scope", "enabled",
+                                "created_at")} for r in rows],
+            ensure_ascii=False, default=str)
 
     @registry.tool(
         "subbot_set_enabled",
@@ -66,9 +67,8 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def subbot_set_enabled(ctx: ToolContext, subbot_id: int, enabled: bool) -> str:
-        cur = ctx.rt.db.execute("UPDATE sub_bots SET enabled = ? WHERE id = ?",
-                                (int(enabled), subbot_id))
-        return json.dumps({"ok": cur.rowcount > 0, "id": subbot_id, "enabled": enabled})
+        ok = repo.sub_bot_set_enabled(ctx.rt.db, subbot_id, enabled)
+        return json.dumps({"ok": ok, "id": subbot_id, "enabled": enabled})
 
     @registry.tool(
         "subbot_remove",
@@ -81,5 +81,5 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def subbot_remove(ctx: ToolContext, subbot_id: int) -> str:
-        cur = ctx.rt.db.execute("DELETE FROM sub_bots WHERE id = ?", (subbot_id,))
-        return json.dumps({"ok": cur.rowcount > 0, "id": subbot_id})
+        ok = repo.sub_bot_delete(ctx.rt.db, subbot_id)
+        return json.dumps({"ok": ok, "id": subbot_id})

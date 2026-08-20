@@ -13,6 +13,7 @@ import sqlite3
 from fastapi import Header, HTTPException, Request, status
 
 from ..db import repo
+from ..db.tenancy import TenantScope
 from ..runtime import Runtime
 from .security import hash_secret
 
@@ -41,5 +42,9 @@ async def require_device(
     device = repo.api_device_by_token_hash(rt.db, token_hash)
     if device is None:
         raise _UNAUTHORIZED
-    repo.api_device_touch(rt.db, int(device["id"]))
+    # The device row is what ESTABLISHES the tenant — it is never taken from
+    # request data. Everything downstream scopes to this id.
+    tenant_id = int(device["tenant_id"])
+    request.state.tenant_id = tenant_id
+    repo.api_device_touch(TenantScope(rt.db, tenant_id), int(device["id"]))
     return device

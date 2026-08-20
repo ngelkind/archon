@@ -36,14 +36,19 @@ class OwnerReplySink(Protocol):
     async def on_error(self, exc: Exception) -> None: ...
 
 
-def _control_chat_pk(rt: Runtime) -> int:
-    return repo.chat_upsert(
-        rt.db, "tg", str(rt.settings.telegram_owner_id), "Archon control", "private"
-    )
+def _control_chat_pk(rt: Runtime, tenant: Any = None) -> int:
+    """The chat backing this tenant's rolling agent memory.
+
+    Owner (and every legacy caller) gets the same Telegram control chat as
+    before, so the personal bot's history is untouched."""
+    from ..tenant import owner_context
+
+    return (tenant or owner_context(rt)).control_chat_pk()
 
 
 async def run_owner_turn(
-    rt: Runtime, text: str, sink: OwnerReplySink, *, chat_pk: int | None = None
+    rt: Runtime, text: str, sink: OwnerReplySink, *, chat_pk: int | None = None,
+    tenant: Any = None,
 ) -> None:
     """Load context → run the owner agent → save context, reporting via ``sink``.
 
@@ -56,17 +61,22 @@ async def run_owner_turn(
 
     router: Router = rt.router  # type: ignore[assignment]
     registry: Registry = rt.registry  # type: ignore[assignment]
+    if tenant is None:
+        from ..tenant import owner_context
+
+        tenant = owner_context(rt)
+    store = tenant.scope
     if chat_pk is None:
-        chat_pk = _control_chat_pk(rt)
+        chat_pk = _control_chat_pk(rt, tenant)
 
     history = [
         ChatMessage(role=r["role"], text=r["content"])  # type: ignore[arg-type]
-        for r in repo.context_get(rt.db, chat_pk, None, limit=30)
+        for r in repo.context_get(store, chat_pk, None, limit=30)
         if r["role"] in ("user", "assistant") and r["content"]
     ]
     history.append(ChatMessage(role="user", text=text))
 
-    ctx = ToolContext(rt=rt, scope="owner", origin_chat_pk=chat_pk)
+    ctx = ToolContext(rt=rt, scope="owner", origin_chat_pk=chat_pk, tenant=tenant)
 
     async def _bridge(event: AgentEvent) -> None:
         if isinstance(event, ToolCallEvent):
@@ -88,9 +98,9 @@ async def run_owner_turn(
         await sink.on_error(exc)
         return
 
-    repo.context_add(rt.db, chat_pk, None, "user", text)
-    repo.context_add(rt.db, chat_pk, None, "assistant", reply)
-    repo.context_prune(rt.db, chat_pk, None)
+    repo.context_add(store, chat_pk, None, "user", text)
+    repo.context_add(store, chat_pk, None, "assistant", reply)
+    repo.context_prune(store, chat_pk, None)
     await sink.on_final(reply)
 
 

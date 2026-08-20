@@ -293,10 +293,9 @@ def test_schedules_list_and_cancel(tmp_path):
     rt = make_rt(tmp_path)
     scheduling_tools.register(rt.registry)
     pk = repo.chat_upsert(rt.db, "wa", "c@g.us", "Family", "group")
-    cur = rt.db.execute(
-        "INSERT INTO scheduled_messages (platform, chat_pk, text, due_at) "
-        "VALUES ('wa', ?, 'hi', '2030-01-01 10:00:00')", (pk,))
-    sched_id = int(cur.lastrowid)
+    sched_id = repo.schedule_create(
+        rt.db, platform="wa", chat_pk=pk, text="hi",
+        due_at="2030-01-01 10:00:00")
     client, headers = _client(rt), _auth(rt)
 
     rows = client.get("/schedules", headers=headers).json()

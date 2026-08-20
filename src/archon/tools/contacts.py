@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 
 from .. import contacts as directory
+from ..db import repo
 from .registry import Registry, ToolContext
 
 
@@ -68,6 +69,6 @@ def register(registry: Registry) -> None:
         scopes=("owner",),
     )
     async def contacts_stats(ctx: ToolContext) -> str:
-        row = ctx.rt.db.query_one(
-            "SELECT COUNT(*) c, COUNT(DISTINCT phone) p FROM contacts")
-        return json.dumps({"entries": row["c"], "unique_numbers": row["p"]})
+        row = repo.contact_counts(ctx.rt.db)
+        return json.dumps({"entries": row["entries"],
+                           "unique_numbers": row["unique_numbers"]})

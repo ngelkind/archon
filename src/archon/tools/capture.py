@@ -80,9 +80,7 @@ def register(registry: Registry) -> None:
         "list of individually-armed chats.",
     )
     async def capture_list(ctx: ToolContext) -> str:
-        rows = ctx.rt.db.query(
-            "SELECT platform, chat_id, name, kind FROM chats WHERE capture_media = 1"
-        )
+        rows = repo.chat_list_capture_armed(ctx.rt.db)
         return json.dumps({
             "all_dms": repo.setting_get(ctx.rt.db, "capture.all_dms", False),
             "armed_chats": [

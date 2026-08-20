@@ -111,7 +111,8 @@ async def run(rt: Runtime) -> None:
     rt.health["subbots"] = "0 running"
     while True:
         try:
-            rows = rt.db.query("SELECT * FROM sub_bots")
+            # Process-wide supervisor: every tenant's sub-bots.
+            rows = repo.sub_bot_list_all_tenants(rt.db)
             wanted = {r["id"]: r for r in rows if r["enabled"]}
             for bot_id, task in list(running.items()):
                 if bot_id not in wanted or task.done():

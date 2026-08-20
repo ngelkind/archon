@@ -29,12 +29,8 @@ def register(registry: Registry) -> None:
     )
     async def persona_create(ctx: ToolContext, name: str, system_prompt: str,
                              model_override: str = "") -> str:
-        ctx.rt.db.execute(
-            "INSERT INTO personas (name, system_prompt, model_override) VALUES (?, ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET system_prompt = excluded.system_prompt, "
-            "model_override = excluded.model_override",
-            (name.strip(), system_prompt, model_override or None),
-        )
+        repo.persona_upsert(ctx.rt.db, name.strip(), system_prompt,
+                            model_override or None)
         return json.dumps({"ok": True, "persona": name.strip()})
 
     @registry.tool(
@@ -42,13 +38,10 @@ def register(registry: Registry) -> None:
         "List personas and which chats they are assigned to.",
     )
     async def persona_list(ctx: ToolContext) -> str:
-        personas = ctx.rt.db.query("SELECT * FROM personas ORDER BY name")
+        personas = repo.persona_list(ctx.rt.db)
         out = []
         for p in personas:
-            chats = ctx.rt.db.query(
-                "SELECT platform, chat_id, name FROM chats WHERE persona_id = ?",
-                (p["id"],),
-            )
+            chats = repo.persona_chats(ctx.rt.db, p["id"])
             out.append({
                 "name": p["name"],
                 "system_prompt": p["system_prompt"][:300],
@@ -68,8 +61,8 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def persona_delete(ctx: ToolContext, name: str) -> str:
-        cur = ctx.rt.db.execute("DELETE FROM personas WHERE name = ?", (name.strip(),))
-        return json.dumps({"ok": cur.rowcount > 0, "persona": name})
+        deleted = repo.persona_delete(ctx.rt.db, name.strip())
+        return json.dumps({"ok": deleted > 0, "persona": name})
 
     @registry.tool(
         "persona_assign",
@@ -94,8 +87,7 @@ def register(registry: Registry) -> None:
         if not persona_name.strip():
             repo.chat_set_field(ctx.rt.db, row["id"], "persona_id", None)
             return json.dumps({"ok": True, "chat": row["name"] or chat_id, "persona": None})
-        persona = ctx.rt.db.query_one("SELECT id FROM personas WHERE name = ?",
-                                      (persona_name.strip(),))
+        persona = repo.persona_by_name(ctx.rt.db, persona_name.strip())
         if persona is None:
             return json.dumps({"error": f"no persona named {persona_name!r}"})
         repo.chat_set_field(ctx.rt.db, row["id"], "persona_id", persona["id"])

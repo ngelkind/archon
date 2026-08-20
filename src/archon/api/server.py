@@ -28,6 +28,10 @@ def build_app(rt: Runtime) -> FastAPI:
         openapi_url=None,
     )
     app.state.rt = rt
+    # Public-exposure hardening; a no-op in single-user (tunnel) mode.
+    from .ratelimit import install as install_rate_limit
+
+    install_rate_limit(app, rt.settings)
     app.include_router(devices.router)  # /pair — code-authed, not bearer
     app.include_router(tools.router)
     app.include_router(agent.router)

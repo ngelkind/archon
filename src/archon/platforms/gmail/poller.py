@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
+from ...db import repo
 from ...db.repo import setting_get  # noqa: F401  (imported for parity; watermark uses gmail_state)
 from ...models import InboundMessage
 from ...runtime import Runtime
@@ -17,16 +18,11 @@ from .client import GmailClient, body_text, header, sender_address, sender_name
 
 
 def _state_get(rt: Runtime, key: str) -> str | None:
-    row = rt.db.query_one("SELECT value FROM gmail_state WHERE key = ?", (key,))
-    return row["value"] if row else None
+    return repo.gmail_state_get(rt.db, key)
 
 
 def _state_set(rt: Runtime, key: str, value: str) -> None:
-    rt.db.execute(
-        "INSERT INTO gmail_state (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, value),
-    )
+    repo.gmail_state_set(rt.db, key, value)
 
 
 def _to_inbound(msg: dict) -> InboundMessage:
@@ -72,10 +68,7 @@ async def run(rt: Runtime) -> None:
             )
             bootstrap = datetime.fromisoformat(_state_get(rt, "bootstrapped"))  # type: ignore[arg-type]
             for stub in stubs:
-                seen = rt.db.query_one(
-                    "SELECT 1 FROM messages WHERE platform = 'gmail' AND msg_id = ?",
-                    (stub["id"],),
-                )
+                seen = repo.message_exists(rt.db, "gmail", stub["id"])
                 if seen:
                     continue
                 full = await asyncio.to_thread(client.get_message, stub["id"])

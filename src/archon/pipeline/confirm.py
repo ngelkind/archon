@@ -32,6 +32,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..db import repo
+from ..db.tenancy import OWNER_TENANT_ID
 from ..runtime import Runtime
 
 Executor = Callable[[Runtime, dict[str, Any]], Awaitable[str]]
@@ -89,18 +90,23 @@ _NOTIFIERS.append(_telegram_notifier)
 
 async def request_confirmation(
     rt: Runtime, *, kind: str, payload: dict[str, Any], description: str,
-    chat_pk: int | None = None,
+    chat_pk: int | None = None, tenant: Any = None,
 ) -> int:
-    """Create a pending action and ask the owner. Returns the action id."""
+    """Create a pending action and ask the owner. Returns the action id.
+
+    ``tenant`` (a ``TenantContext``) scopes the row; omitted means the
+    single-user owner, which is what every existing caller gets."""
     expires = (datetime.now(UTC) + timedelta(minutes=_TTL_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
+    store = tenant.scope if tenant is not None else rt.db
     action_id = repo.pending_action_create(
-        rt.db, kind=kind, payload_json=json.dumps(payload, ensure_ascii=False),
+        store, kind=kind, payload_json=json.dumps(payload, ensure_ascii=False),
         chat_pk=chat_pk, expires_at=expires,
     )
     rt.events.publish("approval.pending", action_id=action_id, action_kind=kind,
-                      description=description, chat_pk=chat_pk)
+                      description=description, chat_pk=chat_pk,
+                      tenant_id=getattr(tenant, "tenant_id", OWNER_TENANT_ID))
     for notifier in tuple(_NOTIFIERS):
         try:
             await notifier(rt, action_id, kind, description, payload)
@@ -119,27 +125,28 @@ async def _execute(rt: Runtime, kind: str, payload: dict[str, Any]) -> str:
 
 
 async def resolve_action(
-    rt: Runtime, action_id: int, verdict: str, *, actor: str
+    rt: Runtime, action_id: int, verdict: str, *, actor: str, tenant: Any = None
 ) -> Outcome:
     """Approve (``verdict == 'ok'``) or reject a pending action exactly once.
 
     Safe under concurrency from Telegram, the app, and a push action: the claim
     is a single atomic UPDATE, so only one caller ever runs the executor.
     """
-    row = repo.pending_action_get(rt.db, action_id)
+    store = tenant.scope if tenant is not None else rt.db
+    row = repo.pending_action_get(store, action_id)
     if row is None:
         return Outcome("unknown", "Already handled or unknown.", ok=False)
     if row["status"] != "pending":
         return Outcome("already", "Already handled or unknown.", ok=False)
     if row["expires_at"] < datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"):
-        repo.pending_action_expire(rt.db, action_id)
+        repo.pending_action_expire(store, action_id)
         rt.events.publish("approval.resolved", action_id=action_id,
                           action_kind=row["kind"], status="expired", actor=actor)
         return Outcome("expired", "Expired.", ok=False)
 
     approved = verdict == "ok"
     if not repo.pending_action_claim(
-        rt.db, action_id, "approved" if approved else "rejected"
+        store, action_id, "approved" if approved else "rejected"
     ):
         return Outcome("already", "Already handled or unknown.", ok=False)
 

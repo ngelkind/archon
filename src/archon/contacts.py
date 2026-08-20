@@ -18,6 +18,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from .db import Db
+from .db import repo
 
 # Cyrillic -> Latin (lowercase). Values may be multi-character.
 _CYR = {
@@ -73,18 +74,13 @@ def import_csv(db: Db, text: str) -> int:
         if not phones or not re.search(r"[\w֐-׿Ѐ-ӿ]", name):
             continue
         for phone in phones:
-            cur = db.execute(
-                "INSERT OR IGNORE INTO contacts (name, phone, norm, source) "
-                "VALUES (?, ?, ?, 'import')", (name, phone, normalize(name)))
-            added += cur.rowcount
+            added += repo.contact_add(db, name, phone, normalize(name), "import")
     return added
 
 
 def remember(db: Db, name: str, phone: str) -> None:
     phone = normalize_phone(phone)
-    db.execute(
-        "INSERT OR IGNORE INTO contacts (name, phone, norm, source) VALUES (?, ?, ?, 'alias')",
-        (name, phone, normalize(name)))
+    repo.contact_add(db, name, phone, normalize(name), "alias")
 
 
 def search(db: Db, query: str, limit: int = 12) -> list[dict]:
@@ -92,7 +88,7 @@ def search(db: Db, query: str, limit: int = 12) -> list[dict]:
     qn = normalize(q)
     ql = q.lower()
     scored: list[tuple[float, str, str, str]] = []
-    for r in db.query("SELECT name, phone, norm, source FROM contacts"):
+    for r in repo.contact_rows(db):
         name, phone, norm, source = r["name"], r["phone"], r["norm"], r["source"]
         if qn and norm and qn == norm:
             score = 1.0

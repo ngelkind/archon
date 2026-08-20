@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     # long-lived and single-use-rotated. Both overridable via env.
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 30
+    # Rate limits applied when multitenant_enabled (the tunnel used to be the
+    # rate limiter; a public listener has none). Per calling IP and per tenant,
+    # over a sliding window. 0 disables that dimension.
+    rate_limit_per_ip_per_min: int = 120
+    rate_limit_per_tenant_per_min: int = 300
+    # Unauthenticated endpoints (/auth/signup, /auth/login, /pair) get a much
+    # tighter per-IP budget — these are the credential-guessing surfaces.
+    rate_limit_auth_per_ip_per_min: int = 10
 
     # --- Push (self-hosted ntfy / UnifiedPush; off by default) ---
     # Base URL of the ntfy instance, e.g. http://10.8.0.1:8080 — a tunnel-only
@@ -124,8 +132,59 @@ class Settings(BaseSettings):
         for p in (self.archon_data, self.media_dir, self.archon_secrets):
             p.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def store_audit_content(self) -> bool:
+        """Whether message text may be written to the audit log.
+
+        Single-user: the owner's own data on the owner's own box — keep the
+        configured value. Multi-tenant: this log is shared across tenants, so
+        third-party message content must not land in it. Default OFF, and an
+        operator has to say ``AUDIT_STORE_CONTENT=true`` on purpose to change
+        that for a multi-user deployment.
+        """
+        if self.multitenant_enabled and "audit_store_content" not in self.model_fields_set:
+            return False
+        return self.audit_store_content
+
+
+#: Secrets that must not keep their in-repo placeholder once the product is
+#: publicly reachable. name -> (attribute, insecure default)
+_REQUIRED_MULTITENANT_SECRETS = (
+    ("API_TOKEN_PEPPER", "api_token_pepper", "dev-insecure-pepper-change-me"),
+    ("JWT_SECRET", "jwt_secret", "dev-insecure-jwt-secret-change-me"),
+)
+
+
+class InsecureConfigError(RuntimeError):
+    """A placeholder secret was left in place on a publicly-reachable config."""
+
+
+def check_production_secrets(s: Settings) -> None:
+    """Fail CLOSED when multi-tenant mode is on but secrets are still defaults.
+
+    In single-user mode the API is bound to loopback/WireGuard, so a placeholder
+    pepper is survivable. Multi-tenant means a public listener, where a known
+    pepper lets anyone forge a device token and a known JWT secret lets anyone
+    mint an access token for any account. Refusing to boot is the only safe
+    behaviour — a warning would be ignored exactly once, in production.
+    """
+    if not s.multitenant_enabled:
+        return
+    bad = [
+        env for env, attr, placeholder in _REQUIRED_MULTITENANT_SECRETS
+        if not str(getattr(s, attr) or "").strip()
+        or str(getattr(s, attr)).strip() == placeholder
+    ]
+    if bad:
+        raise InsecureConfigError(
+            "multitenant_enabled=true requires strong secrets; still unset or at "
+            f"the in-repo default: {', '.join(bad)}. Generate with "
+            "`openssl rand -hex 32` and set them in the environment."
+        )
+
 
 def load_settings() -> Settings:
     s = Settings()
     s.ensure_dirs()
+    check_production_secrets(s)
     return s

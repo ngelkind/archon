@@ -163,11 +163,10 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             from ... import contacts as directory
 
             n = directory.import_csv(rt.db, text)
-            row = rt.db.query_one(
-                "SELECT COUNT(*) c, COUNT(DISTINCT phone) p FROM contacts")
+            row = repo.contact_counts(rt.db)
             await message.answer(
                 f"✅ Imported {n} entries. Directory now holds "
-                f"{row['c']} names / {row['p']} numbers.")
+                f"{row['entries']} names / {row['unique_numbers']} numbers.")
         except Exception as exc:  # noqa: BLE001
             await message.answer(f"⚠️ Import failed: {type(exc).__name__}: {exc}")
 

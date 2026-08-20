@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -59,10 +58,10 @@ def register(registry: Registry) -> None:
                 due = due.replace(tzinfo=ZoneInfo(tz))
             msg_id = await userbot.send_as_owner(rt, chat_id, text, schedule=due)
             chat_pk = repo.chat_upsert(rt.db, "tg", chat_id, None, "group")
-            rt.db.execute(
-                "INSERT INTO scheduled_messages (platform, chat_pk, text, due_at, "
-                "status, tg_native_id) VALUES ('tg', ?, ?, ?, 'delegated_native', ?)",
-                (chat_pk, text, _to_utc_str(due_iso, tz), int(msg_id)),
+            repo.schedule_create(
+                rt.db, platform="tg", chat_pk=chat_pk, text=text,
+                due_at=_to_utc_str(due_iso, tz), status="delegated_native",
+                tg_native_id=int(msg_id),
             )
             return json.dumps({"status": "delegated_native", "tg_msg_id": msg_id})
 
@@ -70,13 +69,12 @@ def register(registry: Registry) -> None:
             "group" if chat_id.endswith("@g.us") else "private")
         chat_pk = repo.chat_upsert(rt.db, platform, chat_id, None, chat_kind)
         result_extra = json.dumps({"subject": subject}) if subject else None
-        cur = rt.db.execute(
-            "INSERT INTO scheduled_messages (platform, chat_pk, text, media_path, "
-            "due_at, result) VALUES (?, ?, ?, ?, ?, ?)",
-            (platform, chat_pk, text, image_path or None,
-             _to_utc_str(due_iso, tz), result_extra),
+        sched_id = repo.schedule_create(
+            rt.db, platform=platform, chat_pk=chat_pk, text=text,
+            media_path=image_path or None, due_at=_to_utc_str(due_iso, tz),
+            result=result_extra,
         )
-        return json.dumps({"status": "scheduled", "id": cur.lastrowid,
+        return json.dumps({"status": "scheduled", "id": sched_id,
                            "due_utc": _to_utc_str(due_iso, tz)})
 
     @registry.tool(
@@ -84,11 +82,7 @@ def register(registry: Registry) -> None:
         "List scheduled messages (pending and recently sent/failed).",
     )
     async def schedule_list(ctx: ToolContext) -> str:
-        rows = ctx.rt.db.query(
-            "SELECT s.id, s.platform, c.chat_id, c.name, s.text, s.due_at, s.status "
-            "FROM scheduled_messages s JOIN chats c ON c.id = s.chat_pk "
-            "ORDER BY s.id DESC LIMIT 30"
-        )
+        rows = repo.schedule_list(ctx.rt.db, limit=30)
         return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
 
     @registry.tool(
@@ -103,11 +97,8 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def schedule_cancel(ctx: ToolContext, schedule_id: int) -> str:
-        cur = ctx.rt.db.execute(
-            "UPDATE scheduled_messages SET status = 'cancelled' "
-            "WHERE id = ? AND status = 'pending'", (schedule_id,),
-        )
-        return json.dumps({"ok": cur.rowcount > 0, "id": schedule_id})
+        ok = repo.schedule_cancel(ctx.rt.db, schedule_id)
+        return json.dumps({"ok": ok, "id": schedule_id})
 
     @registry.tool(
         "attach_image_from_url",
@@ -172,11 +163,7 @@ def register(registry: Registry) -> None:
         "List queued (delayed) auto-replies.",
     )
     async def pending_replies_list(ctx: ToolContext) -> str:
-        rows = ctx.rt.db.query(
-            "SELECT p.id, c.platform, c.chat_id, c.name, p.draft_text, p.due_at, p.status "
-            "FROM pending_replies p JOIN chats c ON c.id = p.chat_pk "
-            "WHERE p.status = 'pending' ORDER BY p.due_at LIMIT 30"
-        )
+        rows = repo.pending_reply_list(ctx.rt.db, limit=30)
         return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
 
     @registry.tool(
@@ -190,8 +177,5 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def pending_reply_cancel(ctx: ToolContext, reply_id: int) -> str:
-        cur = ctx.rt.db.execute(
-            "UPDATE pending_replies SET status = 'cancelled' "
-            "WHERE id = ? AND status = 'pending'", (reply_id,),
-        )
-        return json.dumps({"ok": cur.rowcount > 0, "id": reply_id})
+        ok = repo.pending_reply_cancel(ctx.rt.db, reply_id)
+        return json.dumps({"ok": ok, "id": reply_id})
