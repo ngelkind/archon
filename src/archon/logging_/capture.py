@@ -54,19 +54,22 @@ async def send_capture(rt: Runtime, *, platform: str, chat_id: str,
         f"Chat: {html.escape(chat_name or chat_id)}\n"
         f"From: {html.escape(sender_name or 'unknown')}"
     )
-    file = FSInputFile(local_path)
-    try:
+    from .send import throttled_send
+
+    def _do(b: Any):
+        f = FSInputFile(local_path)
         if kind == "image":
-            await bot.send_photo(channel, file, caption=caption)  # type: ignore[attr-defined]
-        elif kind == "video":
-            await bot.send_video(channel, file, caption=caption)  # type: ignore[attr-defined]
-        elif kind in ("audio", "voice"):
-            await bot.send_audio(channel, file, caption=caption)  # type: ignore[attr-defined]
-        else:
-            await bot.send_document(channel, file, caption=caption)  # type: ignore[attr-defined]
-        rt.audit.note("capture_sent", platform=platform, chat=chat_id, kind=kind)
-    except Exception as exc:  # noqa: BLE001
-        rt.audit.note("capture_send_failed", error=repr(exc)[:200])
+            return b.send_photo(channel, f, caption=caption)
+        if kind == "video":
+            return b.send_video(channel, f, caption=caption)
+        if kind in ("audio", "voice"):
+            return b.send_audio(channel, f, caption=caption)
+        return b.send_document(channel, f, caption=caption)
+
+    try:
+        result = await throttled_send(rt, _do)
+        rt.audit.note("capture_sent" if result is not None else "capture_send_failed",
+                      platform=platform, chat=chat_id, kind=kind)
     finally:
         # One-time media is transient; don't hoard it on disk after logging.
         try:

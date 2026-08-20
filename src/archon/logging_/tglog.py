@@ -65,8 +65,7 @@ async def log_change(rt: Runtime, msg: InboundMessage,
     if chat_row is None or not chat_row["log_deletes"]:
         return
     channel = _channel_id(rt)
-    bot = rt.send_bot()
-    if channel is None or bot is None:
+    if channel is None or rt.send_bot() is None:
         return
 
     chat_label = (chat_row["name"] if chat_row and chat_row["name"] else msg.chat_id)
@@ -80,10 +79,9 @@ async def log_change(rt: Runtime, msg: InboundMessage,
     kind = "deleted" if msg.is_delete else "edited"
     before_clean = _maybe_redact(rt, before_text) if before_text else None
     after_clean = _maybe_redact(rt, msg.text) if (msg.is_edit and msg.text) else None
-    try:
-        await bot.send_message(  # type: ignore[attr-defined]
-            channel, _card(kind, msg.platform, chat_label, sender or "unknown",
-                           before_clean, after_clean),
-        )
-    except Exception as exc:  # noqa: BLE001
-        rt.audit.note("tglog_send_failed", error=repr(exc)[:200])
+    card = _card(kind, msg.platform, chat_label, sender or "unknown",
+                 before_clean, after_clean)
+    from .send import throttled_send
+    result = await throttled_send(rt, lambda b: b.send_message(channel, card))
+    rt.audit.note("tglog_sent" if result is not None else "tglog_dropped",
+                  platform=msg.platform, chat=msg.chat_id, kind=kind)
