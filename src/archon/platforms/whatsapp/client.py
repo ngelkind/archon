@@ -17,6 +17,19 @@ from ...runtime import Runtime
 from . import events as wa_events
 
 
+def _tablet_props():
+    """Advertise as an iPad companion. WhatsApp delivers view-once media to
+    phone/tablet companions but withholds it from Web/Desktop ones — so the
+    platform type we register as decides whether we can capture view-once."""
+    from neonize.proto.waCompanionReg import WAWebProtobufsCompanionReg_pb2 as reg
+
+    return reg.DeviceProps(
+        os="iPad",
+        platformType=reg.DeviceProps.IPAD,
+        requireFullSync=False,
+    )
+
+
 async def _alert_owner(rt: Runtime, text: str) -> None:
     bot = rt.send_bot()
     if bot is not None:
@@ -89,7 +102,10 @@ async def run(rt: Runtime) -> None:
         rt.health["whatsapp"] = "no session (see deploy/MIGRATION.md step 5)"
         return  # clean return: supervisor will not restart-loop
 
-    client = NewAClient(str(session))
+    try:
+        client = NewAClient(str(session), props=_tablet_props())
+    except TypeError:
+        client = NewAClient(str(session))  # older neonize without props kwarg
     rt.clients["whatsapp"] = client
     loop = asyncio.get_running_loop()
     fatal = asyncio.Event()
