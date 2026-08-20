@@ -9,6 +9,9 @@ sudo mkdir -p /opt/archon/{data,secrets,backups}
 sudo chown -R ubuntu:ubuntu /opt/archon
 chmod 700 /opt/archon/secrets
 
+# ffmpeg/ffprobe: required by neonize send_video and yt-dlp format merges.
+command -v ffprobe >/dev/null 2>&1 || sudo apt-get install -y ffmpeg
+
 # uv (pinned installer version; checksum checked by the installer itself)
 if ! command -v ~/.local/bin/uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/0.12.5/install.sh | sh
