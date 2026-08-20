@@ -90,6 +90,19 @@ def register(dp: Dispatcher, rt: Runtime) -> None:
 
     @dp.business_message()
     async def on_business_message(message: Message) -> None:
+        # Owner-issued /download in a private chat: delete + re-send as owner.
+        from . import download_cmd
+
+        is_from_me = bool(message.from_user
+                          and message.from_user.id == rt.settings.telegram_owner_id)
+        if is_from_me and message.business_connection_id:
+            url = download_cmd.is_download_command(message.text)
+            if url:
+                await download_cmd.handle_business(
+                    rt, message.bot, message.chat.id, message.message_id,
+                    message.business_connection_id, url)
+                return
+
         inbound = _to_inbound(rt, message)
         bot: Bot | None = rt.clients.get("control_bot")  # type: ignore[assignment]
         if bot:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     audit_store_content: bool = True
     timezone: str = "Asia/Jerusalem"
     gmail_poll_seconds: int = 90
+
+    @field_validator("tg_log_channel_id", "telegram_api_id", "telethon_session",
+                     "telegram_api_hash", "anthropic_api_key", "openai_api_key",
+                     "gemini_api_key", "openrouter_api_key", mode="before")
+    @classmethod
+    def _empty_env_is_none(cls, v):
+        # ``KEY=`` lines in .env arrive as empty strings; treat them as unset.
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @property
     def db_path(self) -> Path:

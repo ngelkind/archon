@@ -109,6 +109,15 @@ async def run(rt: Runtime) -> None:
     async def on_new(event: Any) -> None:
         if event.is_private:
             return  # Business partition
+        # Owner-issued /download in a group: delete + re-send as owner (MTProto).
+        if getattr(event.message, "out", False):
+            from . import download_cmd
+
+            url = download_cmd.is_download_command(event.message.message)
+            if url:
+                await download_cmd.handle_group_userbot(
+                    rt, client, _norm_chat_id(event.chat_id), event.message.id, url)
+                return
         chat = await event.get_chat()
         inbound = _to_inbound(event, chat)
         if event.message.photo:

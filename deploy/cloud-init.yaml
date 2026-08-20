@@ -6,6 +6,7 @@ packages:
   - sqlite3
   - curl
   - golang-go   # for building goneonize from source (SECURITY.md hardening)
+  - ffmpeg      # yt-dlp format merges for /download
 
 write_files:
   - path: /home/ubuntu/bootstrap.sh

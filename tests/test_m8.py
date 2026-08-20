@@ -118,3 +118,13 @@ def test_persona_roundtrip(tmp_path):
     row = repo.chat_get(rt.db, "wa", "client@s.whatsapp.net")
     persona = rt.db.query_one("SELECT * FROM personas WHERE id = ?", (row["persona_id"],))
     assert persona["name"] == "negotiator"
+
+
+def test_download_command_parser():
+    from archon.platforms.telegram.download_cmd import is_download_command
+    assert is_download_command("/download https://youtu.be/abc") == "https://youtu.be/abc"
+    assert is_download_command("/download  https://tiktok.com/@x/video/1 ") == "https://tiktok.com/@x/video/1"
+    assert is_download_command("/download no url here") is None
+    assert is_download_command("just text") is None
+    assert is_download_command("/downloadfoo") is None
+    assert is_download_command(None) is None

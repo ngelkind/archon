@@ -42,6 +42,8 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             "/status — subsystem health, uptime, queue depth\n"
             "/costs — LLM spend today/week/month\n"
             "/ask <i>question</i> — talk to the agent\n"
+            "/download <i>url</i> — download a video (YouTube/TikTok/…) and send it; "
+            "in any of your private chats it re-sends as you\n"
             "/help — this message"
         )
 
@@ -76,6 +78,19 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             f"7d: ${week['cost']:.4f} ({week['calls']} calls)\n"
             f"30d: ${month['cost']:.4f} ({month['calls']} calls)"
         )
+
+    @dp.message(Command("download"))
+    async def cmd_download(message: Message) -> None:
+        if not is_owner(message):
+            return
+        from . import download_cmd
+
+        url = download_cmd.is_download_command(message.text)
+        if not url:
+            await message.answer("Usage: /download <video url>")
+            return
+        await message.answer("⬇️ downloading…")
+        await download_cmd.handle_control(rt, message.bot, message.chat.id, url)
 
     @dp.message(Command("ask"))
     async def cmd_ask(message: Message) -> None:
