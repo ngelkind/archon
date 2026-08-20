@@ -59,7 +59,10 @@ async def log_change(rt: Runtime, msg: InboundMessage,
                      before_row: sqlite3.Row | None) -> None:
     """Called by the pipeline for every edit/delete event."""
     chat_row = repo.chat_get(rt.db, msg.platform, msg.chat_id)
-    if chat_row is not None and not chat_row["log_deletes"]:
+    # Off by default: log only when the chat's log_deletes flag is on. DMs get
+    # it on at creation (repo.chat_upsert); groups are opt-in via
+    # chat_log_policy_set. An unknown chat is treated as off.
+    if chat_row is None or not chat_row["log_deletes"]:
         return
     channel = _channel_id(rt)
     bot = rt.clients.get("control_bot")

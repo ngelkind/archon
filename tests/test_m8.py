@@ -156,3 +156,13 @@ def test_capture_gate_and_migration(tmp_path):
     assert capture_enabled(rt, "wa", "grp@g.us", "group") is True
     listing = json.loads(asyncio.run(registry.dispatch(ctx, "capture_list", {})))
     assert listing["all_dms"] is True and len(listing["armed_chats"]) == 1
+
+
+def test_log_defaults_dm_on_group_off(tmp_path):
+    rt = make_rt(tmp_path)
+    dm = repo.chat_upsert(rt.db, "wa", "111@s.whatsapp.net", "Friend", "private")
+    grp = repo.chat_upsert(rt.db, "wa", "222@g.us", "Group", "group")
+    assert repo.chat_get_by_pk(rt.db, dm)["log_deletes"] == 1   # DM on by default
+    assert repo.chat_get_by_pk(rt.db, grp)["log_deletes"] == 0  # group off by default
+    ch = repo.chat_upsert(rt.db, "tg", "-100999", "Chan", "channel")
+    assert repo.chat_get_by_pk(rt.db, ch)["log_deletes"] == 0

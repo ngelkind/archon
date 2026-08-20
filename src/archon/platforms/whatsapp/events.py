@@ -132,11 +132,23 @@ def from_message_event(event: Any) -> InboundMessage | None:
             target_id = getattr(event, "OrigMessageID", "") or msg_id
 
         media: list[MediaRef] = []
+        media_view_once = False
         for kind, mapped in _MEDIA_KINDS.items():
             if kind in payload_kinds:
                 media.append(MediaRef(kind=mapped, local_path=None))  # type: ignore[arg-type]
+                try:
+                    if getattr(getattr(message, kind), "viewOnce", False):
+                        media_view_once = True
+                except (AttributeError, ValueError):
+                    pass
 
-        view_once = any(f.startswith("IsViewOnce") for f in flags)
+        # View-once detected three ways: the neonize event flag, the media
+        # message's own viewOnce field, or a viewOnce* payload container.
+        view_once = (
+            media_view_once
+            or any(f.startswith("IsViewOnce") for f in flags)
+            or any("viewonce" in pk.lower() for pk in payload_kinds)
+        )
 
         return InboundMessage(
             platform="wa",

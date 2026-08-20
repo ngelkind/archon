@@ -111,8 +111,9 @@ async def run(rt: Runtime) -> None:
         inbound = wa_events.from_message_event(event)
         if inbound is None:
             return
-        # One-time (view-once) media capture — independent of the whitelist.
-        if inbound.is_ephemeral_media and not inbound.is_from_me:
+        # One-time (view-once) media capture — independent of the whitelist,
+        # and regardless of sender (so your own test sends are captured too).
+        if inbound.is_ephemeral_media:
             await _capture_view_once(rt, client, event, inbound)
         await _download_media_if_wanted(rt, client, event, inbound)
         await rt.bus.publish(inbound)

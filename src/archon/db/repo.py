@@ -41,13 +41,17 @@ def chat_upsert(
     db: Db, platform: str, chat_id: str, name: str | None, kind: str
 ) -> int:
     """Register/refresh a chat; returns its primary key. Policies keep their
-    existing values — only name and last_seen are refreshed."""
+    existing values — only name and last_seen are refreshed.
+
+    New chats: edit/delete logging defaults ON for DMs, OFF for groups/channels
+    (groups are opt-in via chat_log_policy_set — otherwise it's just spam)."""
+    default_log = 1 if kind in ("private", "email") else 0
     db.execute(
-        "INSERT INTO chats (platform, chat_id, name, kind, last_seen_at) "
-        "VALUES (?, ?, ?, ?, ?) "
+        "INSERT INTO chats (platform, chat_id, name, kind, log_deletes, last_seen_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(platform, chat_id) DO UPDATE SET "
         "name = COALESCE(excluded.name, chats.name), last_seen_at = excluded.last_seen_at",
-        (platform, chat_id, name, kind, _now()),
+        (platform, chat_id, name, kind, default_log, _now()),
     )
     row = db.query_one(
         "SELECT id FROM chats WHERE platform = ? AND chat_id = ?", (platform, chat_id)
