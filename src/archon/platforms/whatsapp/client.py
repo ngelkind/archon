@@ -113,7 +113,20 @@ async def run(rt: Runtime) -> None:
     async def on_message(_c: Any, event: Any) -> None:
         inbound = wa_events.from_message_event(event)
         if inbound is None:
+            # Log unparseable events too — helps see what WhatsApp actually
+            # delivers (e.g. media types we don't yet handle).
+            try:
+                kinds = tuple(f.name for f, _ in event.Message.ListFields())
+                rt.audit.note("wa_unparsed", kinds=list(kinds))
+            except Exception:  # noqa: BLE001
+                pass
             return
+        # Diagnostic: surface any non-plain-text delivery (media, view-once, …).
+        _kinds = inbound.raw.get("payload_kinds", [])
+        if any(k not in ("conversation", "messageContextInfo", "extendedTextMessage")
+               for k in _kinds):
+            rt.audit.note("wa_inbound", kinds=_kinds, ephemeral=inbound.is_ephemeral_media,
+                          media=[m.kind for m in inbound.media], from_me=inbound.is_from_me)
         # Owner-issued /download in a WhatsApp chat: delete + re-send as owner.
         if inbound.is_from_me and inbound.text:
             from .download_cmd import handle_wa_download, is_wa_download
