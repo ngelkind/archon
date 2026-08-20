@@ -110,6 +110,17 @@ class AnthropicProvider:
                 {"name": t.name, "description": t.description, "input_schema": t.input_schema}
                 for t in tools
             ]
+            # PROMPT CACHING: the tools + system block is byte-identical on every
+            # call (dozens of tool schemas ≈ most of the input tokens). Anthropic
+            # caches the prefix ending at a cache_control breakpoint, in the order
+            # tools -> system -> messages, so marking the system block caches
+            # BOTH the tools and the system. Cache read is ~10x cheaper than
+            # fresh input; a 5-min TTL comfortably spans a tool loop / a chat.
+            if system:
+                kwargs["system"] = [{
+                    "type": "text", "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }]
         if native_web_search:
             # Anthropic server-side web search: runs on their infrastructure,
             # results come back as content blocks alongside text.
