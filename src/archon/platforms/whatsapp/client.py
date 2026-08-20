@@ -54,7 +54,10 @@ async def _capture_view_once(rt: Runtime, client: Any, event: Any, inbound) -> N
         return
     kind = inbound.media[0].kind if inbound.media else "document"
     try:
-        data: bytes = await client.download_any(event.Message)
+        # Download the unwrapped inner message (view-once media lives inside
+        # a viewOnceMessage* container that download_any won't recurse into).
+        inner, _ = wa_events.unwrap_view_once(event.Message)
+        data: bytes = await client.download_any(inner)
         if not data:
             return
         rt.settings.media_dir.mkdir(parents=True, exist_ok=True)

@@ -38,6 +38,20 @@ _MEDIA_KINDS = {
 _REVOKE = 0
 _EDIT = 14
 
+_VO_CONTAINERS = ("viewOnceMessageV2", "viewOnceMessageV2Extension", "viewOnceMessage")
+
+
+def unwrap_view_once(message: Any) -> tuple[Any, bool]:
+    """If ``message`` is a view-once container, return (inner_message, True);
+    otherwise (message, False). The inner message holds the real media."""
+    for cont in _VO_CONTAINERS:
+        try:
+            if message.HasField(cont):
+                return getattr(message, cont).message, True
+        except (ValueError, AttributeError):
+            continue
+    return message, False
+
 
 def jid_str(value: Any) -> str | None:
     if value is None:
@@ -131,21 +145,30 @@ def from_message_event(event: Any) -> InboundMessage | None:
             # neonize unwrapped the edit; original id rides on the event if present
             target_id = getattr(event, "OrigMessageID", "") or msg_id
 
+        # Unwrap a view-once container to its inner media message (the real
+        # imageMessage/videoMessage/audioMessage lives inside). The media IS
+        # delivered to companion devices; only the official clients refuse to
+        # display it ("open on your phone"). We can still download it.
+        inner, is_vo_container = unwrap_view_once(message)
+        media_message = inner if is_vo_container else message
+        media_kinds = (
+            tuple(f.name for f, _ in inner.ListFields()) if is_vo_container else payload_kinds
+        )
+
         media: list[MediaRef] = []
         media_view_once = False
         for kind, mapped in _MEDIA_KINDS.items():
-            if kind in payload_kinds:
+            if kind in media_kinds:
                 media.append(MediaRef(kind=mapped, local_path=None))  # type: ignore[arg-type]
                 try:
-                    if getattr(getattr(message, kind), "viewOnce", False):
+                    if getattr(getattr(media_message, kind), "viewOnce", False):
                         media_view_once = True
                 except (AttributeError, ValueError):
                     pass
 
-        # View-once detected three ways: the neonize event flag, the media
-        # message's own viewOnce field, or a viewOnce* payload container.
         view_once = (
-            media_view_once
+            is_vo_container
+            or media_view_once
             or any(f.startswith("IsViewOnce") for f in flags)
             or any("viewonce" in pk.lower() for pk in payload_kinds)
         )
@@ -160,13 +183,13 @@ def from_message_event(event: Any) -> InboundMessage | None:
             sender_name=getattr(info, "Pushname", "") or None,
             ts=ts,
             is_from_me=bool(source.IsFromMe),
-            text=_extract_text(message),
+            text=_extract_text(media_message),
             media=media,
             is_edit=is_edit,
             is_delete=is_delete,
             is_ephemeral_media=view_once and bool(media),
             raw={"payload_kinds": list(payload_kinds), "flags": flags,
-                 "event_msg_id": msg_id},
+                 "event_msg_id": msg_id, "view_once": view_once},
         )
     except Exception:  # noqa: BLE001 — any parse failure fails closed
         return None
