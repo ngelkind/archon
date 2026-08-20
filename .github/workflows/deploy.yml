@@ -41,6 +41,13 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
           ~/.local/bin/uv sync --frozen
+          # Rebuild goneonize from source with our patches. This is BOTH the M5
+          # security hardening (own audited .so, no runtime auto-download) AND
+          # the WhatsApp view-once Android-identity spoof. `uv sync` just
+          # reinstalled the prebuilt wheel .so, so this MUST run after it or the
+          # view-once capture silently reverts to a stub on every deploy.
+          sed -i 's/\r$//' deploy/build_goneonize.sh
+          bash deploy/build_goneonize.sh
           sudo systemctl restart archon
           sleep 5
           systemctl is-active archon

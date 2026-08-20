@@ -22,16 +22,20 @@ SESSION = "/opt/archon/secrets/wa/session.db"
 QR_PNG = "/opt/archon/secrets/wa/pair_qr.png"
 
 
-def _tablet_props():
+def _android_props():
+    # Pair as an Android PHONE so WhatsApp delivers view-once media to this
+    # companion (the goneonize build forces the matching UserAgent.Platform +
+    # drops WebInfo). QR pairing is required — pairing-code is rejected under
+    # the Android identity.
     from neonize.proto.waCompanionReg import WAWebProtobufsCompanionReg_pb2 as reg
 
-    return reg.DeviceProps(os="iPad", platformType=reg.DeviceProps.IPAD,
+    return reg.DeviceProps(os="Android", platformType=reg.DeviceProps.ANDROID_PHONE,
                            requireFullSync=False)
 
 
 def main() -> None:
     try:
-        client = NewClient(SESSION, props=_tablet_props())
+        client = NewClient(SESSION, props=_android_props())
     except TypeError:
         client = NewClient(SESSION)
     done = threading.Event()

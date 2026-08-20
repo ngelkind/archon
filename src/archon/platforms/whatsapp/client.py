@@ -17,15 +17,21 @@ from ...runtime import Runtime
 from . import events as wa_events
 
 
-def _tablet_props():
-    """Advertise as an iPad companion. WhatsApp delivers view-once media to
-    phone/tablet companions but withholds it from Web/Desktop ones — so the
-    platform type we register as decides whether we can capture view-once."""
+def _android_props():
+    """Present as an Android PHONE companion (DeviceProps.PlatformType side).
+
+    This is the ONE of three identity fields settable from Python; the other two
+    (ClientPayload.UserAgent.Platform=ANDROID and WebInfo=nil) are forced in the
+    goneonize source build (deploy/build_goneonize.sh android_spoof.go). All
+    three together make WhatsApp's server deliver the real view-once media to
+    this companion, as it does to a genuine phone. neonize merges these props
+    into store.DeviceProps AFTER the Go init, so this must also say ANDROID_PHONE
+    or it would override the Go side back to a default."""
     from neonize.proto.waCompanionReg import WAWebProtobufsCompanionReg_pb2 as reg
 
     return reg.DeviceProps(
-        os="iPad",
-        platformType=reg.DeviceProps.IPAD,
+        os="Android",
+        platformType=reg.DeviceProps.ANDROID_PHONE,
         requireFullSync=False,
     )
 
@@ -100,19 +106,27 @@ async def _capture_quoted_view_once(rt: Runtime, client: Any, event: Any, inboun
         if quoted is None:
             return
         inner, is_container = wa_events.unwrap_view_once(quoted)
-        # Only act on quoted VIEW-ONCE items (not ordinary quoted media).
-        is_vo = is_container or any(
+        kinds = wa_events.media_kinds_of(inner)
+        recoverable = wa_events.has_download_keys(inner)
+        # The composing phone may normalize the view-once container away and
+        # store a bare imageMessage; the only surviving marker is then the
+        # per-media `viewOnce` bool (which it may or may not preserve). Log
+        # EVERY quoted media BEFORE gating so "route works but our marker check
+        # missed it" is distinguishable from "nothing was quoted".
+        vo_bool = any(
             getattr(getattr(inner, k, None), "viewOnce", False)
             for k in ("imageMessage", "videoMessage", "audioMessage")
         )
-        if not is_vo:
-            return
-        kinds = wa_events.media_kinds_of(inner)
-        recoverable = wa_events.has_download_keys(inner)
-        rt.audit.note("wa_quoted_vo", chat=inbound.chat_id, kinds=kinds,
-                      recoverable=recoverable, by=inbound.sender_id,
+        if not kinds:
+            return  # quoted text/other — nothing to capture
+        rt.audit.note("wa_quoted_any", chat=inbound.chat_id, kinds=kinds,
+                      recoverable=recoverable, is_container=is_container,
+                      vo_bool=vo_bool, by=inbound.sender_id,
                       from_me=inbound.is_from_me)
-        if not kinds or not recoverable:
+        # Only act on quoted VIEW-ONCE items (not ordinary quoted media).
+        if not (is_container or vo_bool):
+            return
+        if not recoverable:
             return  # WhatsApp stripped the keys — nothing to download
         if not capture.capture_enabled(rt, "wa", inbound.chat_id, inbound.chat_kind):
             return
@@ -154,7 +168,7 @@ async def run(rt: Runtime) -> None:
         return  # clean return: supervisor will not restart-loop
 
     try:
-        client = NewAClient(str(session), props=_tablet_props())
+        client = NewAClient(str(session), props=_android_props())
     except TypeError:
         client = NewAClient(str(session))  # older neonize without props kwarg
     rt.clients["whatsapp"] = client
