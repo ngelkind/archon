@@ -87,6 +87,14 @@ def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
         except ValueError:
             await query.answer("Malformed callback.")
             return
+        # Acknowledge the tap NOW. Telegram invalidates a callback query after
+        # ~15s, but _execute (a send/revoke, or a loop busy with big agent calls)
+        # can take longer — answering first prevents the "query is too old" crash
+        # that previously swallowed the action's feedback.
+        try:
+            await query.answer()
+        except Exception:  # noqa: BLE001
+            pass
 
         # Ownership + single-use enforced in SQL (calibot pattern).
         row = rt.db.query_one(
@@ -121,7 +129,6 @@ def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
             rt.audit.note("confirm_rejected", action_id=action_id, kind=row["kind"])
             outcome = "❌ Rejected"
 
-        await query.answer()
         if query.message:
             try:
                 await query.message.edit_text(
