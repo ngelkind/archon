@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from .bus import Bus
 from .config import Settings
 from .db import Db
+from .events import EventHub
 from .logging_.audit import AuditLog
 
 
@@ -17,6 +18,9 @@ class Runtime:
     db: Db
     audit: AuditLog
     bus: Bus
+    # Best-effort realtime fan-out for API subscribers. Never blocks publishers
+    # (see events.py); safe to publish to from any hot path.
+    events: EventHub = field(default_factory=EventHub)
     started_at: float = field(default_factory=time.time)
     # Subsystem health, shown by /status: name -> short state string.
     health: dict[str, str] = field(default_factory=dict)

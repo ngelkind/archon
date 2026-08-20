@@ -341,6 +341,13 @@ async def run(rt: Runtime) -> None:
                 await tglog.log_change(rt, msg, before)
             else:
                 repo.message_upsert(rt.db, msg, chat_pk)
+                # Identifiers only — the app fetches content over the
+                # authenticated API, so no message text enters the fan-out.
+                rt.events.publish(
+                    "message.new", chat_pk=chat_pk, platform=msg.platform,
+                    chat_id=msg.chat_id, msg_id=msg.msg_id,
+                    sender=msg.sender_name or msg.sender_id,
+                )
 
             allowed, reason = decide(rt, chat_row, msg)
             # WhatsApp LID<->phone: honour a whitelist set on the counterpart id.

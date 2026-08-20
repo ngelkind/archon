@@ -80,20 +80,28 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     rt.owner_text_handler = partial(handle_owner_text, rt)
 
 
+def _set_health(rt: Runtime, name: str, state: str) -> None:
+    """Record a subsystem state, publishing only on an actual change so the
+    app's health feed carries transitions, not a heartbeat."""
+    if rt.health.get(name) != state:
+        rt.health[name] = state
+        rt.events.publish("health.change", subsystem=name, state=state)
+
+
 async def _supervise(rt: Runtime, name: str, coro_factory) -> None:
     backoff = 5
     while True:
         try:
-            rt.health[name] = "running"
+            _set_health(rt, name, "running")
             await coro_factory()
             # Clean return means intentional shutdown of that subsystem.
-            rt.health[name] = "stopped"
+            _set_health(rt, name, "stopped")
             return
         except asyncio.CancelledError:
-            rt.health[name] = "cancelled"
+            _set_health(rt, name, "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 — supervisor must survive anything
-            rt.health[name] = f"crashed: {type(exc).__name__}"
+            _set_health(rt, name, f"crashed: {type(exc).__name__}")
             rt.audit.note(
                 "subsystem_crash", subsystem=name, error=repr(exc),
                 trace=traceback.format_exc()[-2000:],

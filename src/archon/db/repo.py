@@ -239,6 +239,80 @@ def context_clear(db: Db, chat_pk: int, persona_id: int | None = None) -> None:
     )
 
 
+# --- pending actions (the confirm gate) -------------------------------------
+
+def pending_action_create(
+    db: Db, *, kind: str, payload_json: str, chat_pk: int | None, expires_at: str
+) -> int:
+    cur = db.execute(
+        "INSERT INTO pending_actions (kind, payload_json, chat_pk, expires_at) "
+        "VALUES (?, ?, ?, ?)",
+        (kind, payload_json, chat_pk, expires_at),
+    )
+    return int(cur.lastrowid)
+
+
+def pending_action_get(db: Db, action_id: int) -> sqlite3.Row | None:
+    return db.query_one("SELECT * FROM pending_actions WHERE id = ?", (action_id,))
+
+
+def pending_action_claim(db: Db, action_id: int, status: str) -> bool:
+    """Atomic single-use transition out of 'pending'. Returns True for exactly
+    one caller — whichever channel (phone / Telegram / push) gets there first;
+    every other caller sees False and reports 'already handled'."""
+    cur = db.execute(
+        "UPDATE pending_actions SET status = ? WHERE id = ? AND status = 'pending'",
+        (status, action_id),
+    )
+    return cur.rowcount == 1
+
+
+def pending_action_expire(db: Db, action_id: int) -> None:
+    db.execute(
+        "UPDATE pending_actions SET status = 'expired' WHERE id = ? AND status = 'pending'",
+        (action_id,),
+    )
+
+
+def pending_action_set_owner_msg(db: Db, action_id: int, owner_msg_id: int) -> None:
+    db.execute("UPDATE pending_actions SET owner_msg_id = ? WHERE id = ?",
+               (owner_msg_id, action_id))
+
+
+def pending_action_list(db: Db, status: str = "pending", limit: int = 50) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT * FROM pending_actions WHERE status = ? ORDER BY id DESC LIMIT ?",
+        (status, limit),
+    )
+
+
+# --- read projections for the control API -----------------------------------
+
+def setting_all(db: Db) -> list[sqlite3.Row]:
+    return db.query("SELECT key, value_json FROM settings ORDER BY key")
+
+
+def contact_list(db: Db, limit: int = 500) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT name, phone, source FROM contacts ORDER BY name LIMIT ?", (limit,)
+    )
+
+
+def contact_counts(db: Db) -> sqlite3.Row | None:
+    return db.query_one(
+        "SELECT COUNT(*) AS entries, COUNT(DISTINCT phone) AS unique_numbers FROM contacts"
+    )
+
+
+def schedule_list(db: Db, limit: int = 50) -> list[sqlite3.Row]:
+    return db.query(
+        "SELECT s.id, s.platform, s.chat_pk, c.chat_id, c.name, s.text, s.due_at, "
+        "s.status FROM scheduled_messages s JOIN chats c ON c.id = s.chat_pk "
+        "ORDER BY s.id DESC LIMIT ?",
+        (limit,),
+    )
+
+
 # --- api devices / pairing --------------------------------------------------
 
 def api_device_create(

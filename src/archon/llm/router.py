@@ -188,6 +188,8 @@ class Router:
             ok=True,
             chat_pk=chat_pk,
         )
+        self.rt.events.publish("cost.update", provider=name, model=result.model,
+                               purpose=purpose, cost_usd=cost)
         if result.stop_reason == "refusal":
             raise ProviderError("the model declined this request (safety refusal)")
         return result

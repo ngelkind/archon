@@ -13,7 +13,10 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from ..runtime import Runtime
-from .routers import agent, devices, status, tools
+from .routers import (
+    agent, approvals, chats, config, contacts, costs, devices, schedules, status,
+    stream, tools,
+)
 
 
 def build_app(rt: Runtime) -> FastAPI:
@@ -29,6 +32,13 @@ def build_app(rt: Runtime) -> FastAPI:
     app.include_router(tools.router)
     app.include_router(agent.router)
     app.include_router(status.router)
+    app.include_router(chats.router)
+    app.include_router(config.router)
+    app.include_router(contacts.router)
+    app.include_router(schedules.router)
+    app.include_router(costs.router)
+    app.include_router(approvals.router)
+    app.include_router(stream.router)
     return app
 
 
