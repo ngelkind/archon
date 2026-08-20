@@ -144,8 +144,15 @@ async def run(rt: Runtime) -> None:
         except Exception as exc:  # noqa: BLE001
             rt.audit.note("tg_capture_failed", error=repr(exc)[:200])
 
+    log_channel_id = str(
+        repo.setting_get(rt.db, "log.channel_id", rt.settings.tg_log_channel_id) or ""
+    )
+
     @client.on(events.NewMessage())
     async def on_new(event: Any) -> None:
+        # The bot posts to the log channel; ignore it so we don't re-ingest.
+        if log_channel_id and _norm_chat_id(event.chat_id) == log_channel_id:
+            return
         # One-time (self-destruct) media capture — works in private chats too,
         # which is the ONLY way to get them (Bot API never delivers ttl media).
         if _ephemeral_kind(event.message) and not getattr(event.message, "out", False):

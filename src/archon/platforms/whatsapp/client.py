@@ -156,9 +156,15 @@ async def run(rt: Runtime) -> None:
         # so the supervisor does NOT restart into a ban/replace fight.
         connect_task.cancel()
         return
-    # connect() returned/failed on its own → raise to trigger supervised restart
-    for t in done:
-        exc = t.exception()
-        if exc:
+    # The async client's connect() RETURNS once the connection is established;
+    # whatsmeow keeps the socket alive and auto-reconnects internally. A real
+    # failure surfaces as an exception on the task.
+    if connect_task in done:
+        exc = connect_task.exception()
+        if exc is not None:
             raise exc
-    raise RuntimeError("whatsapp connect() returned unexpectedly")
+    # Connected and healthy — park here until a fatal event fires, so the
+    # supervised task stays alive without re-running connect().
+    rt.health["whatsapp"] = "connected"
+    await fatal.wait()
+    connect_task.cancel()

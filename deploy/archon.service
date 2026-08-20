@@ -16,6 +16,10 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/archon/app/.venv/bin/python -m archon
 Restart=always
 RestartSec=5
+# neonize's Go runtime is slow to unwind on SIGTERM; cap the stop wait and
+# SIGKILL the whole cgroup so restarts/deploys never hang.
+TimeoutStopSec=20
+KillMode=mixed
 
 # Sandboxing (SECURITY.md): the process can write only its own data/secrets.
 NoNewPrivileges=true

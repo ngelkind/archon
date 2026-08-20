@@ -26,6 +26,10 @@ _DEBOUNCE_S = {"gmail": 5.0, "wa": 20.0, "tg": 20.0}
 
 def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
     """Pure gate. Returns (allowed, reason). Fail closed."""
+    # Never process the log channel (the bot posts there; re-ingesting it loops).
+    log_ch = repo.setting_get(rt.db, "log.channel_id", rt.settings.tg_log_channel_id)
+    if log_ch is not None and msg.chat_id == str(log_ch):
+        return False, "log_channel"
     if msg.is_from_me:
         return False, "from_me"
     if msg.is_edit or msg.is_delete:
