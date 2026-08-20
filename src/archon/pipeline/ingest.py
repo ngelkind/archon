@@ -49,6 +49,38 @@ def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
     return False, "not_whitelisted"
 
 
+async def _wa_whitelisted_via_counterpart(rt: Runtime, msg: InboundMessage) -> bool:
+    """A WhatsApp contact's LID (…@lid) and phone JID (…@s.whatsapp.net) are the
+    same person but SEPARATE chat rows. Incoming messages arrive on the LID, yet
+    the owner usually whitelists the phone number. So if a LID chat isn't
+    whitelisted directly, resolve its phone JID and honour a whitelist on either;
+    then propagate the flag to the LID row so the next check is instant."""
+    if msg.platform != "wa" or not msg.chat_id.endswith("@lid"):
+        return False
+    client = rt.clients.get("whatsapp")
+    if client is None:
+        return False
+    try:
+        from neonize.utils import build_jid
+
+        user, _, server = msg.chat_id.partition("@")
+        pn = await client.get_pn_from_lid(build_jid(user, server))  # type: ignore[attr-defined]
+        alt = f"{pn.User}@{pn.Server}" if pn and getattr(pn, "User", None) else None
+    except Exception as exc:  # noqa: BLE001
+        rt.audit.note("wa_lid_resolve_failed", error=repr(exc)[:120])
+        return False
+    if not alt:
+        return False
+    alt_row = repo.chat_get(rt.db, "wa", alt)
+    if alt_row is not None and alt_row["is_whitelisted"]:
+        rt.db.execute(
+            "UPDATE chats SET is_whitelisted = 1 WHERE platform = 'wa' AND chat_id = ?",
+            (msg.chat_id,))
+        rt.audit.note("wa_whitelist_linked", lid=msg.chat_id, phone=alt)
+        return True
+    return False
+
+
 class _Debouncer:
     """Collect messages per chat; fire once the chat has been quiet briefly."""
 
@@ -233,6 +265,10 @@ async def run(rt: Runtime) -> None:
                 repo.message_upsert(rt.db, msg, chat_pk)
 
             allowed, reason = decide(rt, chat_row, msg)
+            # WhatsApp LID<->phone: honour a whitelist set on the counterpart id.
+            if not allowed and reason == "not_whitelisted" and msg.platform == "wa":
+                if await _wa_whitelisted_via_counterpart(rt, msg):
+                    allowed, reason = True, "whitelisted_via_lid"
             rt.audit.gate(platform=msg.platform, chat_id=msg.chat_id,
                           sender_id=msg.sender_id, allowed=allowed, reason=reason,
                           text=msg.text)
