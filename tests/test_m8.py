@@ -128,3 +128,31 @@ def test_download_command_parser():
     assert is_download_command("just text") is None
     assert is_download_command("/downloadfoo") is None
     assert is_download_command(None) is None
+
+
+def test_capture_gate_and_migration(tmp_path):
+    from archon.logging_.capture import capture_enabled
+    from archon.tools import capture as capture_tools
+
+    rt = make_rt(tmp_path)
+    # migration 2 added the column
+    cols = [r["name"] for r in rt.db.query("PRAGMA table_info(chats)")]
+    assert "capture_media" in cols
+
+    registry = Registry()
+    capture_tools.register(registry)
+    ctx = ToolContext(rt=rt, scope="owner")
+
+    # unknown private chat, all_dms off → not enabled
+    assert capture_enabled(rt, "tg", "555", "private") is False
+    # global all-DMs toggle
+    asyncio.run(registry.dispatch(ctx, "capture_all_dms_set", {"enabled": True}))
+    assert capture_enabled(rt, "tg", "555", "private") is True
+    assert capture_enabled(rt, "tg", "-100999", "group") is False  # groups unaffected
+
+    # per-chat arm for a group
+    repo.chat_upsert(rt.db, "wa", "grp@g.us", "Grp", "group")
+    asyncio.run(registry.dispatch(ctx, "capture_add", {"platform": "wa", "chat_id": "grp@g.us"}))
+    assert capture_enabled(rt, "wa", "grp@g.us", "group") is True
+    listing = json.loads(asyncio.run(registry.dispatch(ctx, "capture_list", {})))
+    assert listing["all_dms"] is True and len(listing["armed_chats"]) == 1

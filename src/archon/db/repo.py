@@ -84,6 +84,7 @@ def chat_set_field(db: Db, pk: int, field: str, value: Any) -> None:
     allowed = {
         "name", "is_whitelisted", "auto_reply", "image_recognition",
         "send_policy", "delay_policy_json", "persona_id", "log_deletes",
+        "capture_media",
     }
     if field not in allowed:
         raise ValueError(f"chat field not settable: {field}")

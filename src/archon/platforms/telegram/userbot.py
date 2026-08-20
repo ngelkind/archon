@@ -38,6 +38,22 @@ def _norm_chat_id(chat_id: int) -> str:
     return str(chat_id)
 
 
+def _ephemeral_kind(msg: Any) -> str | None:
+    """Return the media kind if the message is self-destruct (ttl), else None."""
+    media = getattr(msg, "media", None)
+    if media is None or not getattr(media, "ttl_seconds", None):
+        return None
+    if getattr(msg, "photo", None):
+        return "image"
+    if getattr(msg, "video", None):
+        return "video"
+    if getattr(msg, "voice", None):
+        return "voice"
+    if getattr(msg, "audio", None):
+        return "audio"
+    return "document"
+
+
 async def _sync_dialogs(rt: Runtime, client: TelegramClient) -> int:
     count = 0
     async for dialog in client.iter_dialogs(limit=500):
@@ -105,10 +121,38 @@ async def run(rt: Runtime) -> None:
             is_edit=is_edit,
         )
 
+    async def _capture_ephemeral(event: Any, chat_kind: str) -> None:
+        from ...logging_ import capture
+
+        chat_id = _norm_chat_id(event.chat_id)
+        if not capture.capture_enabled(rt, "tg", chat_id, chat_kind):
+            return
+        kind = _ephemeral_kind(event.message)
+        try:
+            rt.settings.media_dir.mkdir(parents=True, exist_ok=True)
+            path = rt.settings.media_dir / f"tg-vo-{chat_id}-{event.message.id}"
+            saved = await event.message.download_media(file=str(path))
+            if not saved:
+                return
+            chat = await event.get_chat()
+            sender = getattr(event, "sender", None)
+            await capture.send_capture(
+                rt, platform="tg", chat_id=chat_id,
+                chat_name=_display_name(chat) if chat else None,
+                sender_name=(_display_name(sender) if sender else "unknown"),
+                kind=kind or "document", local_path=str(saved))
+        except Exception as exc:  # noqa: BLE001
+            rt.audit.note("tg_capture_failed", error=repr(exc)[:200])
+
     @client.on(events.NewMessage())
     async def on_new(event: Any) -> None:
+        # One-time (self-destruct) media capture — works in private chats too,
+        # which is the ONLY way to get them (Bot API never delivers ttl media).
+        if _ephemeral_kind(event.message) and not getattr(event.message, "out", False):
+            await _capture_ephemeral(event, "private" if event.is_private else "group")
+
         if event.is_private:
-            return  # Business partition
+            return  # Business partition (pipeline); capture handled above
         # Owner-issued /download in a group: delete + re-send as owner (MTProto).
         if getattr(event.message, "out", False):
             from . import download_cmd

@@ -136,6 +136,8 @@ def from_message_event(event: Any) -> InboundMessage | None:
             if kind in payload_kinds:
                 media.append(MediaRef(kind=mapped, local_path=None))  # type: ignore[arg-type]
 
+        view_once = any(f.startswith("IsViewOnce") for f in flags)
+
         return InboundMessage(
             platform="wa",
             source="wa",
@@ -150,6 +152,7 @@ def from_message_event(event: Any) -> InboundMessage | None:
             media=media,
             is_edit=is_edit,
             is_delete=is_delete,
+            is_ephemeral_media=view_once and bool(media),
             raw={"payload_kinds": list(payload_kinds), "flags": flags,
                  "event_msg_id": msg_id},
         )

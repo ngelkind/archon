@@ -43,6 +43,8 @@ class InboundMessage:
     media: list[MediaRef] = field(default_factory=list)
     is_edit: bool = False
     is_delete: bool = False
+    # View-once / self-destruct media (WhatsApp view-once, Telegram ttl media).
+    is_ephemeral_media: bool = False
     reply_to: str | None = None
     business_connection_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)

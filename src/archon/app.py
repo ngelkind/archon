@@ -47,6 +47,7 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     from .tools import llm_admin, system as system_tools
     from .tools.registry import Registry
 
+    from .tools import capture as capture_tools
     from .tools import contexts as context_tools
     from .tools import logging_ as logging_tools
     from .tools import media as media_tools
@@ -72,6 +73,7 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     websearch_tools.register(registry)
     subbot_tools.register(registry)
     media_tools.register(registry)
+    capture_tools.register(registry)
     rt.registry = registry
     rt.owner_text_handler = partial(handle_owner_text, rt)
 

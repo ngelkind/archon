@@ -47,6 +47,29 @@ async def _download_media_if_wanted(rt: Runtime, client: Any, event: Any, inboun
         rt.audit.note("wa_media_download_failed", error=repr(exc)[:200])
 
 
+async def _capture_view_once(rt: Runtime, client: Any, event: Any, inbound) -> None:
+    from ...logging_ import capture
+
+    if not capture.capture_enabled(rt, "wa", inbound.chat_id, inbound.chat_kind):
+        return
+    kind = inbound.media[0].kind if inbound.media else "document"
+    try:
+        data: bytes = await client.download_any(event.Message)
+        if not data:
+            return
+        rt.settings.media_dir.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c for c in inbound.msg_id if c.isalnum())[:48] or "vo"
+        ext = {"image": ".jpg", "video": ".mp4", "audio": ".ogg"}.get(kind, ".bin")
+        path = rt.settings.media_dir / f"wa-vo-{safe}{ext}"
+        path.write_bytes(data)
+        await capture.send_capture(
+            rt, platform="wa", chat_id=inbound.chat_id, chat_name=inbound.chat_name,
+            sender_name=inbound.sender_name or inbound.sender_id, kind=kind,
+            local_path=str(path))
+    except Exception as exc:  # noqa: BLE001
+        rt.audit.note("wa_capture_failed", error=repr(exc)[:200])
+
+
 async def run(rt: Runtime) -> None:
     from neonize.aioze.client import NewAClient
     from neonize.events import (
@@ -88,6 +111,9 @@ async def run(rt: Runtime) -> None:
         inbound = wa_events.from_message_event(event)
         if inbound is None:
             return
+        # One-time (view-once) media capture — independent of the whitelist.
+        if inbound.is_ephemeral_media and not inbound.is_from_me:
+            await _capture_view_once(rt, client, event, inbound)
         await _download_media_if_wanted(rt, client, event, inbound)
         await rt.bus.publish(inbound)
 
