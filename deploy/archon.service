@@ -10,7 +10,10 @@ WorkingDirectory=/opt/archon/app
 EnvironmentFile=/opt/archon/secrets/.env
 Environment=ARCHON_DATA=/opt/archon/data
 Environment=ARCHON_SECRETS=/opt/archon/secrets
-ExecStart=/home/ubuntu/.local/bin/uv run --frozen -m archon
+Environment=PYTHONUNBUFFERED=1
+# Run the venv Python directly: deps are pre-synced by install.sh, so uv is
+# not needed at runtime and its ~/.cache writes would fail under ProtectHome.
+ExecStart=/opt/archon/app/.venv/bin/python -m archon
 Restart=always
 RestartSec=5
 
