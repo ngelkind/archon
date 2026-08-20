@@ -111,6 +111,14 @@ async def run(rt: Runtime) -> None:
         inbound = wa_events.from_message_event(event)
         if inbound is None:
             return
+        # Owner-issued /download in a WhatsApp chat: delete + re-send as owner.
+        if inbound.is_from_me and inbound.text:
+            from .download_cmd import handle_wa_download, is_wa_download
+
+            url = is_wa_download(inbound.text)
+            if url:
+                await handle_wa_download(rt, client, inbound, url)
+                return
         # One-time (view-once) media capture — independent of the whitelist,
         # and regardless of sender (so your own test sends are captured too).
         if inbound.is_ephemeral_media:
