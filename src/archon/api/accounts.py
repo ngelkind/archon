@@ -121,6 +121,15 @@ def _rt(request: Request) -> Runtime:
     return request.app.state.rt
 
 
+# SCOPE WARNING: this authenticates an ACCOUNT; it does not scope DATA.
+# Every other router (agent, tools, chats, config, contacts, schedules, costs,
+# approvals, status, stream) reads single-owner tables that have no tenant_id,
+# and ToolContext(scope="owner") grants the one owner's full authority — see
+# api/ctx.py:17,20, agent/owner.py:39-41, pipeline/confirm.py:80,170. Attaching
+# Depends(require_user) to any of them would serve the owner's WhatsApp/Gmail
+# data to any signed-up account. Tenant-scope the data model FIRST.
+# Today only /auth/me and /auth/logout use this, which is what keeps the
+# multitenant_enabled flag inert; keep it that way until tenancy lands.
 async def require_user(
     request: Request,
     authorization: str | None = Header(default=None),
