@@ -81,12 +81,62 @@ async def _tg_native_schedule(rt: Runtime) -> str:
     return "scheduled +2min (native)"
 
 
+async def _wa_download_cmd(rt: Runtime) -> str:
+    """Exercise the exact /download-in-WhatsApp code path (LID convert, revoke,
+    re-send), as if the owner typed it in the chat with the test number."""
+    from datetime import UTC, datetime
+    from .models import InboundMessage
+    from .platforms.whatsapp import download_cmd
+    client = rt.clients.get("whatsapp")
+    if client is None:
+        raise RuntimeError("whatsapp client not connected")
+    fake = InboundMessage(
+        platform="wa", source="wa", chat_id=WA_TEST, chat_kind="private",
+        msg_id="SELFTEST", sender_id="972555000001@s.whatsapp.net",
+        ts=datetime.now(UTC), is_from_me=True, text=f"/download {TIKTOK}",
+    )
+    url = download_cmd.is_wa_download(fake.text)
+    await download_cmd.handle_wa_download(rt, client, fake, url)
+    return "handle_wa_download ran (check audit download_sent/wa_download_send_failed)"
+
+
+async def _calendar_event(rt: Runtime) -> str:
+    from datetime import UTC, datetime, timedelta
+    from .calendar_.client import CalendarClient
+    from .platforms.google_auth import GoogleAuth
+    import asyncio as _a
+    cal = rt.clients.get("calendar") or CalendarClient(
+        GoogleAuth(rt.settings.google_token_path), rt.settings.timezone)
+    rt.clients["calendar"] = cal
+    start = (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0,
+                                                         microsecond=0)
+    created = await _a.to_thread(
+        cal.create_event, calendar_id="primary",
+        title="Archon self-test event", start_iso=start.isoformat())
+    return f"created event {created['id']} — {created.get('htmlLink','')[:60]}"
+
+
+async def _gmail_send(rt: Runtime) -> str:
+    import asyncio as _a
+    from .platforms.gmail.client import GmailClient
+    from .platforms.google_auth import GoogleAuth
+    gm = rt.clients.get("gmail") or GmailClient(GoogleAuth(rt.settings.google_token_path))
+    rt.clients["gmail"] = gm
+    addr = await _a.to_thread(gm.get_profile_address)
+    mid = await _a.to_thread(gm.send, to=addr, subject="Archon self-test",
+                             body="This is an Archon self-test email to yourself.")
+    return f"sent email to {addr} id={mid}"
+
+
 _STEPS: dict[str, Any] = {
     "wa_text": _wa_text,
     "wa_video": _wa_video,
+    "wa_download_cmd": _wa_download_cmd,
     "tg_text": _tg_text,
     "tg_video": _tg_video,
     "tg_schedule": _tg_native_schedule,
+    "calendar": _calendar_event,
+    "gmail": _gmail_send,
 }
 
 

@@ -138,4 +138,8 @@ async def main() -> None:
     tasks.append(
         asyncio.create_task(_supervise(rt, "subbots", lambda: tg_subbots.run(rt)))
     )
+    from . import testconsole
+    tasks.append(
+        asyncio.create_task(_supervise(rt, "testconsole", lambda: testconsole.watch(rt)))
+    )
     await asyncio.gather(*tasks)
