@@ -39,6 +39,31 @@ def _log_channel(rt: Runtime) -> int | None:
         return None
 
 
+async def send_protected_notice(rt: Runtime, *, platform: str, chat_id: str,
+                                chat_name: str | None, sender_name: str) -> None:
+    """A one-time item arrived but its content was withheld from this device
+    (WhatsApp delivers companions only an ``unavailable type="view_once"``
+    stub). Log who sent it and when — the metadata we DO get — so a one-time
+    send is never silent, even when the pixels can't be recovered."""
+    channel = _log_channel(rt)
+    bot = rt.send_bot()
+    if channel is None or bot is None:
+        rt.audit.note("capture_no_channel", platform=platform, chat=chat_id)
+        return
+    caption = (
+        f"👁 <b>One-time media detected</b> (content protected)\n"
+        f"Platform: {_PLATFORM_LABEL.get(platform, platform)}\n"
+        f"Chat: {html.escape(chat_name or chat_id)}\n"
+        f"From: {html.escape(sender_name or 'unknown')}\n"
+        f"<i>WhatsApp withheld the media from this device; only the fact of it is visible.</i>"
+    )
+    from .send import throttled_send
+
+    result = await throttled_send(rt, lambda b: b.send_message(channel, caption))
+    rt.audit.note("capture_notice_sent" if result is not None else "capture_notice_failed",
+                  platform=platform, chat=chat_id)
+
+
 async def send_capture(rt: Runtime, *, platform: str, chat_id: str,
                        chat_name: str | None, sender_name: str, kind: str,
                        local_path: str) -> None:

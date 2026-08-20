@@ -53,6 +53,64 @@ def unwrap_view_once(message: Any) -> tuple[Any, bool]:
     return message, False
 
 
+# Message fields that can carry a ContextInfo (and thus a quoted reply target).
+_CONTEXT_CARRIERS = (
+    "extendedTextMessage", "imageMessage", "videoMessage",
+    "documentMessage", "audioMessage", "stickerMessage",
+)
+
+
+def find_quoted(message: Any) -> Any | None:
+    """Return the quoted Message from a reply, or None.
+
+    A reply carries the original in ``<carrier>.contextInfo.quotedMessage``.
+    HYPOTHESIS (unverified for view-once specifically — gate on
+    ``has_download_keys()``): when the owner replies to an *unopened* view-once
+    from their phone, the phone normalizes the container away and embeds the
+    bare media message with mediaKey + directPath intact, which fans out to
+    companions normally — letting a companion recover the bytes. This is proven
+    for ordinary quoted media; WhatsApp may strip the keys for view-once, and
+    once a view-once is opened its bytes are gone. The probe decides it."""
+    for carrier in _CONTEXT_CARRIERS:
+        try:
+            if not message.HasField(carrier):
+                continue
+            ctx = getattr(message, carrier).contextInfo
+            if ctx.HasField("quotedMessage"):
+                return ctx.quotedMessage
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
+def media_kinds_of(message: Any) -> list[str]:
+    """The media payload kinds present on a message (mapped names)."""
+    out: list[str] = []
+    for kind, mapped in _MEDIA_KINDS.items():
+        try:
+            if message.HasField(kind):
+                out.append(mapped)
+        except (ValueError, AttributeError):
+            continue
+    return out
+
+
+def has_download_keys(message: Any) -> bool:
+    """True if a media field on ``message`` still carries the keys needed to
+    download+decrypt it (mediaKey + directPath). Detects whether WhatsApp left
+    a quoted view-once recoverable or stripped it."""
+    for kind in _MEDIA_KINDS:
+        try:
+            if not message.HasField(kind):
+                continue
+            m = getattr(message, kind)
+            if getattr(m, "mediaKey", b"") and getattr(m, "directPath", ""):
+                return True
+        except (ValueError, AttributeError):
+            continue
+    return False
+
+
 def jid_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -98,6 +156,33 @@ def _extract_text(message: Any) -> str | None:
         except ValueError:
             continue
     return None
+
+
+def info_summary(info: Any) -> dict[str, Any] | None:
+    """Pull (chat, sender, name, kind, ts, id) from a neonize MessageInfo.
+
+    Shared by the normal MessageEv path and the UndecryptableMessage (view-once
+    stub) path — the latter carries the same MessageSource but no decryptable
+    body, so we can still report who sent a one-time item and when."""
+    try:
+        source = info.MessageSource
+        chat = jid_str(source.Chat)
+        sender = jid_str(source.Sender) or jid_str(getattr(source, "SenderAlt", None))
+        if not chat or not sender:
+            return None
+        ts_epoch = epoch_seconds(getattr(info, "Timestamp", None))
+        ts = datetime.fromtimestamp(ts_epoch, tz=UTC) if ts_epoch else datetime.now(UTC)
+        return {
+            "chat_id": chat,
+            "chat_kind": "group" if getattr(source, "IsGroup", False) else "private",
+            "sender_id": sender,
+            "sender_name": getattr(info, "Pushname", "") or None,
+            "is_from_me": bool(getattr(source, "IsFromMe", False)),
+            "msg_id": getattr(info, "ID", None) or "",
+            "ts": ts,
+        }
+    except Exception:  # noqa: BLE001 — fail closed
+        return None
 
 
 def from_message_event(event: Any) -> InboundMessage | None:

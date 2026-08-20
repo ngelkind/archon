@@ -86,6 +86,56 @@ async def _capture_view_once(rt: Runtime, client: Any, event: Any, inbound) -> N
         rt.audit.note("wa_capture_failed", error=repr(exc)[:200])
 
 
+async def _capture_quoted_view_once(rt: Runtime, client: Any, event: Any, inbound) -> None:
+    """Recover a one-time item's bytes via the quoted-reply route.
+
+    When someone replies to a view-once, the reply carries the original in
+    contextInfo.quotedMessage — and if the replier's phone still holds the
+    media, the mediaKey + directPath ride along, so we (a companion) can
+    download+decrypt it even though the original reached us only as a stub."""
+    from ...logging_ import capture
+
+    try:
+        quoted = wa_events.find_quoted(event.Message)
+        if quoted is None:
+            return
+        inner, is_container = wa_events.unwrap_view_once(quoted)
+        # Only act on quoted VIEW-ONCE items (not ordinary quoted media).
+        is_vo = is_container or any(
+            getattr(getattr(inner, k, None), "viewOnce", False)
+            for k in ("imageMessage", "videoMessage", "audioMessage")
+        )
+        if not is_vo:
+            return
+        kinds = wa_events.media_kinds_of(inner)
+        recoverable = wa_events.has_download_keys(inner)
+        rt.audit.note("wa_quoted_vo", chat=inbound.chat_id, kinds=kinds,
+                      recoverable=recoverable, by=inbound.sender_id,
+                      from_me=inbound.is_from_me)
+        if not kinds or not recoverable:
+            return  # WhatsApp stripped the keys — nothing to download
+        if not capture.capture_enabled(rt, "wa", inbound.chat_id, inbound.chat_kind):
+            return
+        data: bytes = await client.download_any(inner)
+        if not data:
+            rt.audit.note("wa_quoted_vo_empty", chat=inbound.chat_id)
+            return
+        rt.settings.media_dir.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c for c in inbound.msg_id if c.isalnum())[:48] or "qvo"
+        kind = kinds[0]
+        ext = {"image": ".jpg", "video": ".mp4", "audio": ".ogg"}.get(kind, ".bin")
+        path = rt.settings.media_dir / f"wa-qvo-{safe}{ext}"
+        path.write_bytes(data)
+        await capture.send_capture(
+            rt, platform="wa", chat_id=inbound.chat_id, chat_name=inbound.chat_name,
+            sender_name=inbound.sender_name or inbound.sender_id, kind=kind,
+            local_path=str(path))
+        rt.audit.note("wa_quoted_vo_captured", chat=inbound.chat_id, kind=kind,
+                      bytes=len(data))
+    except Exception as exc:  # noqa: BLE001
+        rt.audit.note("wa_quoted_vo_failed", error=repr(exc)[:200])
+
+
 async def run(rt: Runtime) -> None:
     from neonize.aioze.client import NewAClient
     from neonize.events import (
@@ -95,6 +145,7 @@ async def run(rt: Runtime) -> None:
         PairStatusEv,
         StreamReplacedEv,
         TemporaryBanEv,
+        UndecryptableMessageEv,
     )
 
     session = rt.settings.wa_session_path
@@ -155,8 +206,40 @@ async def run(rt: Runtime) -> None:
         # and regardless of sender (so your own test sends are captured too).
         if inbound.is_ephemeral_media:
             await _capture_view_once(rt, client, event, inbound)
+        # Quoted-reply route: reply to a one-time item to recover its bytes even
+        # when the original reached us only as a withheld stub.
+        await _capture_quoted_view_once(rt, client, event, inbound)
         await _download_media_if_wanted(rt, client, event, inbound)
         await rt.bus.publish(inbound)
+
+    @client.event(UndecryptableMessageEv)
+    async def on_undecryptable(_c: Any, ev: Any) -> None:
+        # WhatsApp delivers companions a view-once as an `unavailable` stub with
+        # no ciphertext (IsUnavailable=True). whatsmeow auto-asks the phone to
+        # resend; if that ever succeeds the real media arrives later as a normal
+        # MessageEv (handled above). Either way, surface the STUB now so a
+        # one-time send is never silent — we at least get sender + time.
+        try:
+            if not bool(getattr(ev, "IsUnavailable", False)):
+                return  # a plain decryption failure, not a withheld one-time item
+            info = wa_events.info_summary(getattr(ev, "Info", None))
+            if info is None:
+                rt.audit.note("wa_viewonce_stub", detail="no info")
+                return
+            rt.audit.note("wa_viewonce_stub", chat=info["chat_id"],
+                          sender=info["sender_id"], msg_id=info["msg_id"],
+                          from_me=info["is_from_me"])
+            from ...logging_ import capture
+
+            if not capture.capture_enabled(rt, "wa", info["chat_id"], info["chat_kind"]):
+                return
+            row = repo.chat_get(rt.db, "wa", info["chat_id"])
+            chat_name = row["name"] if row and row["name"] else None
+            await capture.send_protected_notice(
+                rt, platform="wa", chat_id=info["chat_id"], chat_name=chat_name,
+                sender_name=info["sender_name"] or info["sender_id"])
+        except Exception as exc:  # noqa: BLE001
+            rt.audit.note("wa_viewonce_stub_failed", error=repr(exc)[:200])
 
     @client.event(PairStatusEv)
     async def on_pair(_c: Any, ev: Any) -> None:

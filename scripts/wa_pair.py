@@ -1,22 +1,25 @@
-"""One-time WhatsApp device pairing for the VM (phone-code method).
+"""WhatsApp pairing for the VM — QR mode, registering as an iPad companion.
 
-Usage:  wa_pair.py <international_number_no_plus>   e.g. 972555000001
+Registering as an iPad (not a Web/Desktop browser) is what makes WhatsApp
+deliver view-once media to this companion. Phone-code pairing isn't offered
+for the tablet platform, so we use QR: the QR is rendered to a PNG that the
+operator relays to the phone (WhatsApp -> Link a device -> scan).
 
-Prints ``PAIRCODE: XXXXXXXX`` — type that into WhatsApp on your phone:
-Settings -> Linked Devices -> Link a device -> Link with phone number instead.
-Exits once paired. The session is written to /opt/archon/secrets/wa/session.db.
+Prints ``QR_SAVED n`` each time a fresh QR is written (they rotate ~every 20s)
+and ``PAIRED_OK`` once linked. Session -> /opt/archon/secrets/wa/session.db.
 """
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 
+import segno
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, PairStatusEv
 
 SESSION = "/opt/archon/secrets/wa/session.db"
+QR_PNG = "/opt/archon/secrets/wa/pair_qr.png"
 
 
 def _tablet_props():
@@ -27,12 +30,22 @@ def _tablet_props():
 
 
 def main() -> None:
-    phone = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
         client = NewClient(SESSION, props=_tablet_props())
     except TypeError:
         client = NewClient(SESSION)
     done = threading.Event()
+    counter = {"n": 0}
+
+    @client.qr
+    def _on_qr(_c, data):  # type: ignore[no-untyped-def]
+        text = data.decode() if isinstance(data, (bytes, bytearray)) else str(data)
+        try:
+            segno.make(text, error="m").save(QR_PNG, scale=9, border=3)
+            counter["n"] += 1
+            print(f"QR_SAVED {counter['n']}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"QR_ERROR: {exc!r}", flush=True)
 
     @client.event(ConnectedEv)
     def _on_conn(_c, _e):  # type: ignore[no-untyped-def]
@@ -43,22 +56,7 @@ def main() -> None:
     def _on_pair(_c, e):  # type: ignore[no-untyped-def]
         print(f"PAIR_STATUS: {e}", flush=True)
 
-    def request_code() -> None:
-        for _ in range(40):
-            try:
-                code = client.PairPhone(phone, True)
-                print(f"PAIRCODE: {code}", flush=True)
-                return
-            except Exception as exc:  # noqa: BLE001
-                time.sleep(1.5)
-        print(f"PAIR_FAILED: {exc!r}", flush=True)  # noqa: F821
-
-    if phone:
-        threading.Thread(target=request_code, daemon=True).start()
-
-    # Exit shortly after pairing succeeds so the session file is released
-    # before the archon service takes it over.
-    def _watch() -> None:
+    def _watch():  # type: ignore[no-untyped-def]
         done.wait()
         time.sleep(5)
         print("EXIT: session saved", flush=True)
