@@ -144,4 +144,13 @@ async def main() -> None:
     tasks.append(
         asyncio.create_task(_supervise(rt, "testconsole", lambda: testconsole.watch(rt)))
     )
+
+    if rt.settings.api_enabled:
+        from .api import server as api_server
+
+        tasks.append(
+            asyncio.create_task(_supervise(rt, "api", lambda: api_server.run(rt)))
+        )
+    else:
+        rt.health["api"] = "disabled (set API_ENABLED=true)"
     await asyncio.gather(*tasks)

@@ -21,6 +21,10 @@ dependencies = [
     # Infrastructure
     "httpx>=0.27",
     "pydantic-settings>=2.6",
+    # Control API for the Android app — in-process ASGI, bound to the tunnel
+    # interface only (never 0.0.0.0). Only imported when api_enabled is set.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
     # Media downloads (YouTube/TikTok/Instagram/X/… ~1800 sites) — pure Python,
     # actively maintained. Needs ffmpeg on the host for some format merges.
     "yt-dlp>=2025.1.1",

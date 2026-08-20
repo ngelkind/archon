@@ -1,9 +1,17 @@
 """Owner conversation: free text in the control bot goes through the agent
-with the FULL toolset (scope 'owner') and a persistent rolling context."""
+with the FULL toolset (scope 'owner') and a persistent rolling context.
+
+The transport-neutral core is :func:`run_owner_turn`, which drives the agent
+and reports progress/results through an :class:`OwnerReplySink`. Telegram is one
+adapter (:class:`TelegramSink`); the API is another (``api.sink.SseSink``). Both
+share the same control-chat context, so the app and the Telegram bot are one
+rolling memory.
+"""
 
 from __future__ import annotations
 
 import html
+from typing import Any, Protocol
 
 from aiogram.types import Message
 
@@ -11,8 +19,21 @@ from ..db import repo
 from ..llm.base import ChatMessage, ProviderError
 from ..runtime import Runtime
 from ..tools.registry import Registry, ToolContext
-from .agent import run_agent
+from .agent import AgentEvent, ToolCallEvent, ToolResultEvent, run_agent
 from .prompts import OWNER_AGENT_SYSTEM
+
+
+class OwnerReplySink(Protocol):
+    """Where a single owner turn reports what happened. Every method is awaited;
+    exactly one of on_final / on_error is called per turn (the terminal event)."""
+
+    async def on_tool_call(self, name: str, args: dict[str, Any], call_id: str) -> None: ...
+
+    async def on_tool_result(self, name: str, call_id: str, result: str) -> None: ...
+
+    async def on_final(self, text: str) -> None: ...
+
+    async def on_error(self, exc: Exception) -> None: ...
 
 
 def _control_chat_pk(rt: Runtime) -> int:
@@ -21,15 +42,22 @@ def _control_chat_pk(rt: Runtime) -> int:
     )
 
 
-async def handle_owner_text(
-    rt: Runtime, message: Message, text_override: str | None = None
+async def run_owner_turn(
+    rt: Runtime, text: str, sink: OwnerReplySink, *, chat_pk: int | None = None
 ) -> None:
+    """Load context → run the owner agent → save context, reporting via ``sink``.
+
+    Behaviour matches the pre-refactor ``handle_owner_text``: on ``ProviderError``
+    the context is NOT saved and only ``on_error`` fires; on success the user and
+    assistant turns are persisted, pruned, and ``on_final`` fires. Other
+    exceptions propagate to the caller (as before).
+    """
     from ..llm.router import Router
 
     router: Router = rt.router  # type: ignore[assignment]
     registry: Registry = rt.registry  # type: ignore[assignment]
-    text = text_override if text_override is not None else (message.text or "")
-    chat_pk = _control_chat_pk(rt)
+    if chat_pk is None:
+        chat_pk = _control_chat_pk(rt)
 
     history = [
         ChatMessage(role=r["role"], text=r["content"])  # type: ignore[arg-type]
@@ -39,6 +67,13 @@ async def handle_owner_text(
     history.append(ChatMessage(role="user", text=text))
 
     ctx = ToolContext(rt=rt, scope="owner", origin_chat_pk=chat_pk)
+
+    async def _bridge(event: AgentEvent) -> None:
+        if isinstance(event, ToolCallEvent):
+            await sink.on_tool_call(event.name, event.args, event.call_id)
+        elif isinstance(event, ToolResultEvent):
+            await sink.on_tool_result(event.name, event.call_id, event.result)
+
     try:
         reply = await run_agent(
             router, registry, ctx,
@@ -47,15 +82,43 @@ async def handle_owner_text(
             purpose="agent",
             chat_pk=chat_pk,
             max_tokens=4096,
+            on_event=_bridge,
         )
     except ProviderError as exc:
-        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        await sink.on_error(exc)
         return
 
     repo.context_add(rt.db, chat_pk, None, "user", text)
     repo.context_add(rt.db, chat_pk, None, "assistant", reply)
     repo.context_prune(rt.db, chat_pk, None)
+    await sink.on_final(reply)
 
-    # Telegram HTML mode: escape, keep it simple. 4096-char message cap.
-    for chunk_start in range(0, len(reply), 4000):
-        await message.answer(html.escape(reply[chunk_start:chunk_start + 4000]))
+
+class TelegramSink:
+    """Owner-reply sink for the control bot. Preserves the exact prior behaviour:
+    tool progress is not surfaced; the final reply is HTML-escaped and sent in
+    4000-char chunks; a provider error is sent as a ``⚠️`` line."""
+
+    def __init__(self, message: Message) -> None:
+        self._message = message
+
+    async def on_tool_call(self, name: str, args: dict[str, Any], call_id: str) -> None:
+        return None
+
+    async def on_tool_result(self, name: str, call_id: str, result: str) -> None:
+        return None
+
+    async def on_final(self, text: str) -> None:
+        # Telegram HTML mode: escape, keep it simple. 4096-char message cap.
+        for chunk_start in range(0, len(text), 4000):
+            await self._message.answer(html.escape(text[chunk_start:chunk_start + 4000]))
+
+    async def on_error(self, exc: Exception) -> None:
+        await self._message.answer(f"⚠️ {html.escape(str(exc))}")
+
+
+async def handle_owner_text(
+    rt: Runtime, message: Message, text_override: str | None = None
+) -> None:
+    text = text_override if text_override is not None else (message.text or "")
+    await run_owner_turn(rt, text, TelegramSink(message))

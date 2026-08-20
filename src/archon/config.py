@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Jerusalem"
     gmail_poll_seconds: int = 90
 
+    # --- Control API (Android app; off by default) ---
+    # Bind to the loopback/tunnel interface only — NEVER 0.0.0.0. On the VM this
+    # is the WireGuard interface address so the API is unreachable off-tunnel.
+    api_enabled: bool = False
+    api_bind_host: str = "127.0.0.1"
+    api_port: int = 8787
+    # Server-side pepper mixed into every device-token / pair-code hash so a
+    # stolen DB yields no usable tokens. MUST be overridden with a strong random
+    # value in production (API_TOKEN_PEPPER); the default is a dev placeholder.
+    api_token_pepper: str = "dev-insecure-pepper-change-me"
+
     @field_validator("tg_log_channel_id", "telegram_api_id", "telethon_session",
                      "telegram_api_hash", "anthropic_api_key", "openai_api_key",
                      "gemini_api_key", "openrouter_api_key", mode="before")

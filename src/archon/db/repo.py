@@ -239,6 +239,64 @@ def context_clear(db: Db, chat_pk: int, persona_id: int | None = None) -> None:
     )
 
 
+# --- api devices / pairing --------------------------------------------------
+
+def api_device_create(
+    db: Db, *, name: str | None, token_hash: str,
+    device_pubkey: str | None = None, push_endpoint: str | None = None,
+) -> int:
+    cur = db.execute(
+        "INSERT INTO api_devices (name, token_hash, device_pubkey, push_endpoint) "
+        "VALUES (?, ?, ?, ?)",
+        (name, token_hash, device_pubkey, push_endpoint),
+    )
+    return int(cur.lastrowid)
+
+
+def api_device_by_token_hash(db: Db, token_hash: str) -> sqlite3.Row | None:
+    """A live (non-revoked) device for this bearer hash, or None."""
+    return db.query_one(
+        "SELECT * FROM api_devices WHERE token_hash = ? AND revoked_at IS NULL",
+        (token_hash,),
+    )
+
+
+def api_device_touch(db: Db, device_id: int) -> None:
+    db.execute("UPDATE api_devices SET last_seen_at = ? WHERE id = ?", (_now(), device_id))
+
+
+def api_device_revoke(db: Db, device_id: int) -> None:
+    db.execute(
+        "UPDATE api_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        (_now(), device_id),
+    )
+
+
+def api_device_list(db: Db) -> list[sqlite3.Row]:
+    return db.query("SELECT * FROM api_devices ORDER BY created_at DESC")
+
+
+def api_pair_code_create(db: Db, *, code_hash: str, expires_at: str) -> None:
+    db.execute(
+        "INSERT INTO api_pair_codes (code_hash, expires_at) VALUES (?, ?) "
+        "ON CONFLICT(code_hash) DO UPDATE SET "
+        "expires_at = excluded.expires_at, used_at = NULL",
+        (code_hash, expires_at),
+    )
+
+
+def api_pair_code_consume(db: Db, code_hash: str) -> bool:
+    """Single-use redemption: atomically mark the code used iff it is unused and
+    unexpired. Returns True exactly once per valid code (whichever caller wins)."""
+    now = _now()
+    cur = db.execute(
+        "UPDATE api_pair_codes SET used_at = ? "
+        "WHERE code_hash = ? AND used_at IS NULL AND expires_at >= ?",
+        (now, code_hash, now),
+    )
+    return cur.rowcount == 1
+
+
 # --- audit ------------------------------------------------------------------
 
 def audit_add(db: Db, actor: str, action: str, detail: dict[str, Any] | None = None) -> None:
