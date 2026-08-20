@@ -19,9 +19,19 @@ from neonize.events import ConnectedEv, PairStatusEv
 SESSION = "/opt/archon/secrets/wa/session.db"
 
 
+def _tablet_props():
+    from neonize.proto.waCompanionReg import WAWebProtobufsCompanionReg_pb2 as reg
+
+    return reg.DeviceProps(os="iPad", platformType=reg.DeviceProps.IPAD,
+                           requireFullSync=False)
+
+
 def main() -> None:
     phone = sys.argv[1] if len(sys.argv) > 1 else ""
-    client = NewClient(SESSION)
+    try:
+        client = NewClient(SESSION, props=_tablet_props())
+    except TypeError:
+        client = NewClient(SESSION)
     done = threading.Event()
 
     @client.event(ConnectedEv)
