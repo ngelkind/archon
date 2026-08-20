@@ -23,6 +23,7 @@ from .base import ChatMessage, LLMResult, Provider, ProviderError, ToolSpec
 _TIER_FOR_PURPOSE = {
     "triage": "cheap",
     "vision": "cheap",
+    "reply": "cheap",       # the tool-less per-message "answering agent"
     "agent": "strong",
     "persona_chat": "strong",
     "heavy": "strong",

@@ -145,6 +145,82 @@ async def _describe_images(rt: Runtime, router, batch: list[InboundMessage],
     return notes
 
 
+async def _send_reply_now(rt: Runtime, platform: str, chat_id: str,
+                          chat_kind: str, text: str) -> None:
+    """Send an auto-reply straight to the chat as the owner (no confirm gate —
+    auto-reply chats are the owner's explicit opt-in)."""
+    if platform == "tg":
+        from ..tools.telegram import _send_group_executor, _send_private_executor
+
+        executor = _send_private_executor if chat_kind == "private" else _send_group_executor
+        await executor(rt, {"chat_id": chat_id, "text": text})
+    elif platform == "wa":
+        from ..tools.whatsapp import _send_executor
+
+        await _send_executor(rt, {"chat_jid": chat_id, "text": text})
+
+
+async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
+                      chat_row, persona_block: str) -> None:
+    """The 'answering agent': a cheap, TOOL-LESS model writes a short reply to
+    EACH incoming message and it's sent to the chat. Unlike the smart agent it
+    never calls tools — it just talks — so it can answer everyone in a group
+    quickly and cheaply. Respects the chat's reply-delay policy."""
+    from ..scheduler.delays import compute_due
+
+    first = batch[0]
+    chat_name = chat_row["name"] if chat_row and chat_row["name"] else first.chat_id
+    delay_json = chat_row["delay_policy_json"] if chat_row else None
+    sent = 0
+    _MAX = 25  # runaway guard: never fire more than this many replies per batch
+    for m in batch:
+        if m.is_from_me or not (m.text or "").strip():
+            continue
+        # Skip emoji / sticker / punctuation-only messages — nothing to answer,
+        # and it saves a model call. isalnum() is true for Hebrew/Cyrillic too.
+        if not any(c.isalnum() for c in (m.text or "")):
+            continue
+        if sent >= _MAX:
+            rt.audit.note("auto_reply_capped", chat=first.chat_id, cap=_MAX)
+            break
+        system = (
+            f"You are replying AS THE OWNER in the chat \"{chat_name}\". Write a "
+            "short, natural reply to the message below, in the SAME language as "
+            "the message. Do not add greetings or sign-offs. Reply with ONLY the "
+            "message text.\n" + persona_block +
+            "\nIf the message clearly needs no reply (spam, a sticker/emoji only, "
+            "or someone else's side-conversation), output exactly: <skip>"
+        )
+        user = (f"From {m.sender_name or m.sender_id}:\n{wrap_untrusted(m.text)}")
+        try:
+            res = await router.complete(
+                purpose="reply", system=system,
+                messages=[ChatMessage(role="user", text=user)],
+                max_tokens=300, chat_pk=chat_row["id"] if chat_row else None)
+        except ProviderError as exc:
+            rt.audit.note("auto_reply_failed", chat=first.chat_id, error=str(exc)[:120])
+            continue
+        reply = (res.text or "").strip()
+        if not reply or reply.lower().startswith("<skip"):
+            continue
+        due = compute_due(delay_json) if delay_json else None
+        if due is not None and chat_row is not None:
+            rt.db.execute(
+                "INSERT INTO pending_replies (chat_pk, draft_text, due_at) VALUES (?, ?, ?)",
+                (chat_row["id"], reply, due.strftime("%Y-%m-%d %H:%M:%S")))
+        else:
+            try:
+                await _send_reply_now(rt, first.platform, first.chat_id,
+                                      first.chat_kind, reply)
+            except Exception as exc:  # noqa: BLE001
+                rt.audit.note("auto_reply_send_failed", chat=first.chat_id,
+                              error=repr(exc)[:150])
+                continue
+        sent += 1
+    rt.audit.note("auto_reply_done", chat=first.chat_id, replied=sent, batch=len(batch),
+                  queued=bool(delay_json))
+
+
 async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     from ..llm.router import Router
 
@@ -184,18 +260,18 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
         if persona:
             persona_block = f"\nPersona for replies in this chat:\n{persona['system_prompt']}\n"
 
-    task_lines = []
-    if verdict.action in ("calendar", "both"):
-        task_lines.append(
-            "- If the message(s) contain a concrete event, create it with "
-            "calendar_create_event (check calendar_check_conflicts first when a "
-            "specific time is given)."
-        )
+    # The dumb "answering agent" (cheap, tool-less) writes a reply to EACH
+    # sender. The smart tool-agent below runs only for calendar/actions.
     if verdict.action in ("respond", "both") and auto_reply:
-        task_lines.append(
-            "- Compose and send an appropriate reply to this chat using the "
-            "available send/reply tool for this platform."
-        )
+        await _auto_reply(rt, router, batch, chat_row, persona_block)
+    if verdict.action not in ("calendar", "both"):
+        return
+
+    task_lines = [
+        "- If the message(s) contain a concrete event, create it with "
+        "calendar_create_event (check calendar_check_conflicts first when a "
+        "specific time is given)."
+    ]
 
     system = INBOUND_AGENT_SYSTEM.format(
         platform=first.platform,
