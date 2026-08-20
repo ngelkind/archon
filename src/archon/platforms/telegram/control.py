@@ -119,6 +119,32 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
         else:
             await handler(message, text_override=text)  # type: ignore[operator]
 
+    # Owner sends a Google Contacts .csv → import it into the contact directory.
+    @dp.message(F.document)
+    async def owner_document(message: Message) -> None:
+        if not is_owner(message):
+            return
+        doc = message.document
+        fname = (doc.file_name or "").lower()
+        if not (fname.endswith(".csv") or "contact" in fname):
+            await message.answer("Send me a Google Contacts <b>.csv</b> export "
+                                 "to import your contacts.")
+            return
+        await message.answer("📇 Importing contacts…")
+        try:
+            buf = await bot.download(doc)
+            text = buf.read().decode("utf-8-sig", errors="replace")
+            from ... import contacts as directory
+
+            n = directory.import_csv(rt.db, text)
+            row = rt.db.query_one(
+                "SELECT COUNT(*) c, COUNT(DISTINCT phone) p FROM contacts")
+            await message.answer(
+                f"✅ Imported {n} entries. Directory now holds "
+                f"{row['c']} names / {row['p']} numbers.")
+        except Exception as exc:  # noqa: BLE001
+            await message.answer(f"⚠️ Import failed: {type(exc).__name__}: {exc}")
+
     # Catch-all: any owner text without a command goes to the agent loop.
     @dp.message(F.text & ~F.text.startswith("/"))
     async def owner_text(message: Message) -> None:
@@ -154,6 +180,20 @@ async def run(rt: Runtime) -> None:
     rt.health["control_bot"] = "polling"
     me = await bot.get_me()
     rt.audit.note("control_bot_started", username=me.username)
+    # Register the command menu so clients (esp. Desktop) show the "/" list.
+    from aiogram.types import BotCommand
+
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="status", description="Subsystem health & uptime"),
+            BotCommand(command="ask", description="Ask the agent a question"),
+            BotCommand(command="costs", description="LLM spend (day/week/month)"),
+            BotCommand(command="download", description="Download a video by URL"),
+            BotCommand(command="selftest", description="Run internal self-tests"),
+            BotCommand(command="help", description="What Archon can do"),
+        ])
+    except Exception as exc:  # noqa: BLE001 — a menu failure must not stop the bot
+        rt.audit.note("set_my_commands_failed", error=repr(exc)[:120])
     try:
         await dp.start_polling(
             bot,

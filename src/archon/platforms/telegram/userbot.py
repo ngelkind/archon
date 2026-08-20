@@ -57,9 +57,15 @@ def _ephemeral_kind(msg: Any) -> str | None:
 async def _sync_dialogs(rt: Runtime, client: TelegramClient) -> int:
     count = 0
     async for dialog in client.iter_dialogs(limit=500):
+        # Private chats are synced too (as kind "private") so the owner's
+        # contacts are findable by name for sends — the Business partition
+        # governs message INGESTION dedupe, not the dialog directory.
         if dialog.is_user:
-            continue  # private chats belong to the Business partition
-        kind = "channel" if (dialog.is_channel and not dialog.is_group) else "group"
+            kind = "private"
+        elif dialog.is_channel and not dialog.is_group:
+            kind = "channel"
+        else:
+            kind = "group"
         repo.chat_upsert(rt.db, "tg", _norm_chat_id(dialog.id),
                          dialog.name or None, kind)
         count += 1
@@ -212,14 +218,61 @@ async def run(rt: Runtime) -> None:
 
 # --- helpers used by tools ----------------------------------------------------
 
+async def _resolve_ref(client: TelegramClient, ref: str) -> Any:
+    """Resolve a Telegram peer from a numeric id, @username, or phone number.
+
+    A phone that isn't already a contact is imported first (Telethon can only
+    get_entity a phone that the account knows). This is how "message dad at
+    +972..." works without an existing chat."""
+    ref = str(ref).strip()
+    # Numeric chat id (may be negative for groups) -> resolve directly.
+    try:
+        return await client.get_entity(int(ref))
+    except (ValueError, TypeError):
+        pass
+    except Exception:
+        pass  # fall through to string resolution
+    try:
+        return await client.get_entity(ref)  # @username, t.me link, or known phone
+    except Exception:
+        digits = ref.lstrip("+")
+        if digits.isdigit():
+            from telethon.tl.functions.contacts import ImportContactsRequest
+            from telethon.tl.types import InputPhoneContact
+
+            res = await client(ImportContactsRequest(
+                [InputPhoneContact(client_id=0, phone="+" + digits,
+                                   first_name="Contact", last_name="")]))
+            if getattr(res, "users", None):
+                return res.users[0]
+            raise RuntimeError(f"phone {ref} is not on Telegram (or hides its number)")
+        raise
+
+
 async def send_as_owner(rt: Runtime, chat_id: str, text: str,
                         schedule: datetime | None = None) -> str:
     client: TelegramClient | None = rt.clients.get("tg_userbot")  # type: ignore[assignment]
     if client is None:
         raise RuntimeError("Telegram userbot is not connected")
-    entity = await client.get_entity(int(chat_id))
+    entity = await _resolve_ref(client, chat_id)
     msg = await client.send_message(entity, text, schedule=schedule)
     return str(getattr(msg, "id", "sent"))
+
+
+async def resolve_contact(rt: Runtime, ref: str) -> dict[str, Any]:
+    """Resolve a phone/@username/id to a Telegram peer and cache it as a chat so
+    it becomes findable by name. Returns {chat_id, name, username}."""
+    client: TelegramClient | None = rt.clients.get("tg_userbot")  # type: ignore[assignment]
+    if client is None:
+        raise RuntimeError("Telegram userbot is not connected")
+    entity = await _resolve_ref(client, ref)
+    chat_id = _norm_chat_id(entity.id)
+    name = _display_name(entity)
+    kind = "private" if getattr(entity, "bot", None) is not None or hasattr(entity, "phone") \
+        or getattr(entity, "first_name", None) is not None else "group"
+    repo.chat_upsert(rt.db, "tg", chat_id, name, "private" if kind == "private" else kind)
+    return {"chat_id": chat_id, "name": name,
+            "username": getattr(entity, "username", None)}
 
 
 async def refresh_dialogs(rt: Runtime) -> int:

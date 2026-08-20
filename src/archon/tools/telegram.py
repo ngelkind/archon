@@ -16,28 +16,36 @@ from .registry import Registry, ToolContext
 
 
 async def _send_private_executor(rt: Runtime, payload: dict[str, Any]) -> str:
-    bot = rt.clients.get("control_bot")
-    if bot is None:
-        raise RuntimeError("control bot is not running")
-    conn_id = repo.setting_get(rt.db, "tg.business_connection_id", None)
-    if not conn_id:
-        raise RuntimeError("no Telegram Business connection (connect the bot in "
-                           "Settings → Telegram Business → Chatbots)")
-    sent = await bot.send_message(  # type: ignore[attr-defined]
-        chat_id=int(payload["chat_id"]),
-        text=payload["text"],
-        business_connection_id=conn_id,
-        parse_mode=None,
-    )
-    chat_pk = repo.chat_upsert(rt.db, "tg", payload["chat_id"],
-                               payload.get("chat_name"), "private")
-    rt.db.execute(
-        "INSERT OR IGNORE INTO messages (chat_pk, platform, chat_id, msg_id, source, "
-        "sender_id, is_from_me, ts, text) VALUES (?, 'tg', ?, ?, 'business', 'me', 1, "
-        "datetime('now'), ?)",
-        (chat_pk, payload["chat_id"], str(sent.message_id), payload["text"]),
-    )
-    return f"Telegram message to {payload.get('chat_name') or payload['chat_id']} sent (as you)"
+    ref = str(payload["chat_id"])
+    chat_name = payload.get("chat_name")
+    # Prefer the userbot: it IS the owner's account (sends as the owner) and can
+    # resolve a phone number / @username / numeric id — so this works without the
+    # Business connection. Fall back to Business only if the userbot is down.
+    client = rt.clients.get("tg_userbot")
+    if client is not None:
+        from ..platforms.telegram import userbot
+        msg_id = await userbot.send_as_owner(rt, ref, payload["text"])
+        source = "userbot"
+    else:
+        bot = rt.clients.get("control_bot")
+        conn_id = repo.setting_get(rt.db, "tg.business_connection_id", None)
+        if bot is None or not conn_id:
+            raise RuntimeError("cannot send: Telegram userbot is down and there is "
+                               "no Business connection")
+        sent = await bot.send_message(  # type: ignore[attr-defined]
+            chat_id=int(ref), text=payload["text"],
+            business_connection_id=conn_id, parse_mode=None)
+        msg_id = str(sent.message_id)
+        source = "business"
+    # Cache only when we have a numeric chat id (ref may be a phone/username).
+    if ref.lstrip("-").isdigit():
+        chat_pk = repo.chat_upsert(rt.db, "tg", ref, chat_name, "private")
+        rt.db.execute(
+            "INSERT OR IGNORE INTO messages (chat_pk, platform, chat_id, msg_id, source, "
+            "sender_id, is_from_me, ts, text) VALUES (?, 'tg', ?, ?, ?, 'me', 1, "
+            "datetime('now'), ?)",
+            (chat_pk, ref, str(msg_id), source, payload["text"]))
+    return f"Telegram message to {chat_name or ref} sent (as you)"
 
 
 async def _send_group_executor(rt: Runtime, payload: dict[str, Any]) -> str:
@@ -96,8 +104,10 @@ async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> 
 def register(registry: Registry) -> None:
     @registry.tool(
         "tg_send_private",
-        "Send a Telegram message AS THE OWNER in one of their private chats "
-        "(via the Business connection). chat_id from chat_list/chat_find.",
+        "Send a Telegram message AS THE OWNER in a private chat (via the "
+        "userbot). chat_id may be a numeric id from chat_list/chat_find, an "
+        "@username, or a phone number (+972...) — e.g. resolve a name with "
+        "contact_search, then pass the phone here.",
         {
             "type": "object",
             "properties": {
@@ -155,7 +165,7 @@ def register(registry: Registry) -> None:
         return json.dumps([
             {"chat_id": r["chat_id"], "name": r["name"], "kind": r["kind"],
              "whitelisted": bool(r["is_whitelisted"])}
-            for r in rows if r["kind"] in ("group", "channel")
+            for r in rows if r["kind"] in ("group", "channel", "private")
         ], ensure_ascii=False)
 
     @registry.tool(
