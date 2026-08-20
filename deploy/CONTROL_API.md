@@ -56,7 +56,11 @@ in this repo touches the live VM automatically.
    API_PORT=8787
    API_TOKEN_PEPPER=<paste 32+ random bytes, e.g. `openssl rand -hex 32`>
    NTFY_BASE_URL=http://10.13.13.1:8080
+   # NTFY_AUTH_TOKEN=<optional — only if you turn on ntfy auth>
    ```
+   The exact push wire-format (ntfy JSON publish; `action_id` in an
+   `action:<id>` tag) is defined in `src/archon/api/push.py` — the source of
+   truth the app parses against.
    Then `sudo systemctl restart archon`.
 
 ## In the app
