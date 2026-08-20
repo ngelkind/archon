@@ -186,12 +186,11 @@ async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
             rt.audit.note("auto_reply_capped", chat=first.chat_id, cap=_MAX)
             break
         system = (
-            f"You are replying AS THE OWNER in the chat \"{chat_name}\". Write a "
-            "short, natural reply to the message below, in the SAME language as "
-            "the message. Do not add greetings or sign-offs. Reply with ONLY the "
-            "message text.\n" + persona_block +
-            "\nIf the message clearly needs no reply (spam, a sticker/emoji only, "
-            "or someone else's side-conversation), output exactly: <skip>"
+            f"You are replying AS THE OWNER in the chat \"{chat_name}\". The owner "
+            "wants EVERY message here answered — always write a reply, even to "
+            "small talk. Keep it short and natural, in the SAME language as the "
+            "message. No greetings or sign-offs. Reply with ONLY the reply text."
+            + persona_block
         )
         user = (f"From {m.sender_name or m.sender_id}:\n{wrap_untrusted(m.text)}")
         try:
