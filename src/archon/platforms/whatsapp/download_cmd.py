@@ -46,20 +46,41 @@ async def handle_wa_download(rt: Runtime, client: Any, inbound, url: str) -> Non
         await _notify(rt, f"⚠️ WhatsApp /download failed: {exc}")
         return
 
-    chat = _to_jid(inbound.chat_id)
-    # Delete the /download command (revoke = delete for everyone).
+    # @lid addressing on send/revoke is the usual cause of error 479. If the
+    # chat is a LID, convert it to the phone-number JID and prefer that.
+    chat_candidates: list[str] = []
+    if inbound.chat_id.endswith("@lid"):
+        try:
+            pn = await client.get_pn_from_lid(_to_jid(inbound.chat_id))
+            pn_str = f"{pn.User}@{pn.Server}" if pn and getattr(pn, "User", None) else None
+            if pn_str:
+                chat_candidates.append(pn_str)
+        except Exception as exc:  # noqa: BLE001
+            rt.audit.note("wa_lid_convert_failed", error=repr(exc)[:120])
+    chat_candidates.append(inbound.chat_id)
+    chat = _to_jid(chat_candidates[0])
+
+    # Delete the /download command (revoke = delete for everyone). Best-effort;
+    # error 479 here does not block the re-send.
     try:
         await client.revoke_message(chat, _to_jid(inbound.sender_id), inbound.msg_id)
-    except Exception as exc:  # noqa: BLE001 — deletion is best-effort
-        rt.audit.note("wa_download_revoke_failed", error=repr(exc)[:150])
-    # Re-send the video as the owner.
-    try:
-        if v.size_bytes <= _WA_VIDEO_LIMIT:
-            await client.send_video(chat, v.path, caption=(v.title or "")[:900])
-        else:
-            await client.send_document(chat, v.path, filename=f"{v.title[:60]}.mp4")
-        rt.audit.note("download_sent", surface="wa", extractor=v.extractor,
-                      size=v.size_bytes)
     except Exception as exc:  # noqa: BLE001
-        await _notify(rt, f"⚠️ Downloaded '{v.title}' but the WhatsApp send failed: "
-                          f"{type(exc).__name__}")
+        rt.audit.note("wa_download_revoke_failed", error=repr(exc)[:150])
+
+    # Re-send the video as the owner, trying each candidate JID until one works.
+    last_err: Exception | None = None
+    for cand in chat_candidates:
+        try:
+            target = _to_jid(cand)
+            if v.size_bytes <= _WA_VIDEO_LIMIT:
+                await client.send_video(target, v.path, caption=(v.title or "")[:900])
+            else:
+                await client.send_document(target, v.path, filename=f"{v.title[:60]}.mp4")
+            rt.audit.note("download_sent", surface="wa", extractor=v.extractor,
+                          size=v.size_bytes, jid=cand)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            rt.audit.note("wa_download_send_failed", jid=cand, error=repr(exc)[:200])
+    await _notify(rt, f"⚠️ Downloaded '{v.title}' but the WhatsApp send failed "
+                      f"({type(last_err).__name__}: {str(last_err)[:120]}).")
