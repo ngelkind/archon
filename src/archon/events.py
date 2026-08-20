@@ -54,12 +54,24 @@ class EventHub:
                 continue
         return event
 
-    @contextmanager
-    def subscribe(self) -> Iterator[asyncio.Queue[dict[str, Any]]]:
-        """Register a queue for the duration of the block (used by /stream)."""
+    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
+        """Register and return a new subscriber queue. Pair with
+        :meth:`unsubscribe` — or prefer :meth:`subscription`, which cannot leak
+        a queue if the consumer raises."""
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._maxsize)
         self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        """Stop delivering to a queue. Idempotent."""
+        self._subscribers.discard(queue)
+
+    @contextmanager
+    def subscription(self) -> Iterator[asyncio.Queue[dict[str, Any]]]:
+        """subscribe()/unsubscribe() bound to a block, so a disconnect or an
+        exception can never leave a queue attached (used by /stream)."""
+        queue = self.subscribe()
         try:
             yield queue
         finally:
-            self._subscribers.discard(queue)
+            self.unsubscribe(queue)

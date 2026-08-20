@@ -33,7 +33,7 @@ def _rt_with_gate_tools(tmp_path):
 def test_eventhub_fans_out_and_unsubscribes():
     async def scenario():
         hub = EventHub()
-        with hub.subscribe() as q1, hub.subscribe() as q2:
+        with hub.subscription() as q1, hub.subscription() as q2:
             hub.publish("message.new", chat_pk=1)
             assert q1.get_nowait()["kind"] == "message.new"
             assert q2.get_nowait()["data"] == {"chat_pk": 1}
@@ -46,7 +46,7 @@ def test_eventhub_fans_out_and_unsubscribes():
 def test_eventhub_drops_oldest_and_never_blocks():
     async def scenario():
         hub = EventHub(maxsize=3)
-        with hub.subscribe() as q:
+        with hub.subscription() as q:
             for i in range(10):
                 hub.publish("cost.update", n=i)  # would block a bounded Queue
             assert q.qsize() == 3
@@ -66,7 +66,7 @@ def test_eventhub_publish_allows_kind_payload_field():
 def test_eventhub_publish_survives_a_bad_subscriber():
     async def scenario():
         hub = EventHub()
-        with hub.subscribe():
+        with hub.subscription():
             hub._subscribers.add("not a queue")  # type: ignore[arg-type]
             hub.publish("health.change", subsystem="api")  # must not raise
 
@@ -144,7 +144,7 @@ def test_request_confirmation_publishes_and_notifies(tmp_path):
     confirm.register_notifier(notifier)
     try:
         async def scenario():
-            with rt.events.subscribe() as q:
+            with rt.events.subscription() as q:
                 action_id = await confirm.request_confirmation(
                     rt, kind="wa.send", payload={"x": 1}, description="to Dana")
                 event = q.get_nowait()
@@ -353,3 +353,175 @@ def test_stream_delivers_events(tmp_path):
     assert event["kind"] == "health.change"
     assert event["data"] == {"subsystem": "api", "state": "running"}
     assert rt.events.subscriber_count == 0  # unsubscribed on disconnect
+
+
+# --- concurrent approval race ------------------------------------------------
+
+def test_two_concurrent_approvals_execute_exactly_once(tmp_path):
+    """The plan's key guarantee: whichever channel approves first wins and the
+    executor runs once, even when Telegram and the app decide simultaneously."""
+    rt = make_rt(tmp_path)
+    ran: list[str] = []
+
+    async def slow_executor(rt_, payload):
+        await asyncio.sleep(0.01)  # widen the window between claim and finish
+        ran.append("executed")
+        return "sent"
+
+    confirm.register_executor("race.kind", slow_executor)
+    action_id = _pending(rt, kind="race.kind")
+
+    async def scenario():
+        return await asyncio.gather(
+            confirm.resolve_action(rt, action_id, "ok", actor="telegram"),
+            confirm.resolve_action(rt, action_id, "ok", actor="api:device:1"),
+        )
+
+    first, second = asyncio.run(scenario())
+    statuses = sorted([first.status, second.status])
+    assert statuses == ["already", "approved"]
+    assert ran == ["executed"]  # exactly one executor run
+
+
+# --- ntfy push notifier ------------------------------------------------------
+
+class _FakeAsyncClient:
+    """Stand-in for httpx.AsyncClient that records posts instead of sending."""
+
+    posts: list[dict] = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, *, content=None, headers=None):
+        type(self).posts.append({"url": url, "content": content, "headers": headers})
+
+
+def _patch_httpx(monkeypatch):
+    from archon.api import push as push_mod
+
+    _FakeAsyncClient.posts = []
+    monkeypatch.setattr(push_mod.httpx, "AsyncClient", _FakeAsyncClient)
+    return _FakeAsyncClient
+
+
+def _rt_with_push(tmp_path, url: str, topic: str = "archon-abc"):
+    rt = make_rt(tmp_path)
+    rt.settings.ntfy_base_url = url
+    repo.api_device_create(rt.db, name="phone", token_hash="h1", push_endpoint=topic)
+    return rt
+
+
+def test_push_is_a_no_op_when_unconfigured(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="")  # ntfy_base_url empty → disabled
+    assert push.enabled(rt) is False
+    assert asyncio.run(push.notify(rt, title="t", body="b")) == 0
+    asyncio.run(push.approval_notifier(rt, 7, "wa.send", "to Dana", {"text": "hi"}))
+    assert fake.posts == []  # nothing attempted at all
+
+
+def test_push_posts_content_free_payload(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://10.8.0.1:8080/")
+    asyncio.run(push.approval_notifier(
+        rt, 42, "wa.send", "Send 'meet at 8' to Dana", {"text": "meet at 8"}))
+
+    assert len(fake.posts) == 1
+    post = fake.posts[0]
+    assert post["url"] == "http://10.8.0.1:8080/archon-abc"  # trailing slash handled
+    assert post["headers"]["Title"] == "Approval requested"
+    assert post["headers"]["X-Action-Id"] == "42"
+    # The whole point: no kind, description, or message content in the payload.
+    blob = f"{post['url']}{post['content']}{post['headers']}"
+    for secret in ("wa.send", "Dana", "meet at 8"):
+        assert secret not in blob
+
+
+def test_push_skips_revoked_devices_and_survives_broker_failure(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+    dead = repo.api_device_create(rt.db, name="old", token_hash="h2",
+                                  push_endpoint="archon-dead")
+    repo.api_device_revoke(rt.db, dead)
+    assert asyncio.run(push.notify(rt, title="t", body="b")) == 1
+    assert [p["url"] for p in fake.posts] == ["http://ntfy/archon-abc"]
+
+    async def boom(*a, **kw):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(fake, "post", boom)
+    assert asyncio.run(push.notify(rt, title="t", body="b")) == 0  # never raises
+
+
+def test_owner_alert_publishes_event_and_pushes(tmp_path, monkeypatch):
+    from archon.api import push
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+
+    async def scenario():
+        with rt.events.subscription() as q:
+            await push.owner_alert(rt, source="tg_notify_owner")
+            return q.get_nowait()
+
+    event = asyncio.run(scenario())
+    assert event["kind"] == "owner.alert"
+    assert event["data"] == {"source": "tg_notify_owner"}
+    assert fake.posts[0]["headers"]["Title"] == "Archon alert"
+
+
+def test_push_register_is_idempotent(tmp_path):
+    from archon.api import push
+
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+    before = len(confirm._NOTIFIERS)
+    push.register(rt)
+    push.register(rt)
+    try:
+        assert len(confirm._NOTIFIERS) == before + 1
+        assert push.approval_notifier in confirm._NOTIFIERS
+    finally:
+        confirm._NOTIFIERS.remove(push.approval_notifier)
+
+
+def test_tg_notify_owner_also_pushes(tmp_path, monkeypatch):
+    """The owner-alert path wakes the phone as well as sending to Telegram,
+    without leaking the alert text into the push."""
+    from archon.tools import telegram as telegram_tools
+    from archon.tools.registry import Registry, ToolContext
+
+    fake = _patch_httpx(monkeypatch)
+    rt = _rt_with_push(tmp_path, url="http://ntfy")
+
+    sent: list[tuple] = []
+
+    class FakeBot:
+        async def send_message(self, chat_id, text, parse_mode=None):
+            sent.append((chat_id, text))
+
+    rt.clients["notifier"] = FakeBot()
+    registry = Registry()
+    telegram_tools.register(registry)
+
+    out = asyncio.run(registry.dispatch(
+        ToolContext(rt=rt, scope="owner"), "tg_notify_owner",
+        {"text": "disk almost full on the VM"}))
+
+    assert json.loads(out) == {"ok": True}
+    assert sent == [(rt.settings.telegram_owner_id, "disk almost full on the VM")]
+    # Telegram carries the text; the push carries only "there is an alert".
+    assert len(fake.posts) == 1
+    assert "disk almost full" not in str(fake.posts[0])

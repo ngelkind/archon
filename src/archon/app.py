@@ -153,6 +153,13 @@ async def main() -> None:
         asyncio.create_task(_supervise(rt, "testconsole", lambda: testconsole.watch(rt)))
     )
 
+    if rt.settings.ntfy_base_url.strip():
+        # Wakes paired devices for approvals/alerts. Content-free payloads; the
+        # notifier is a no-op unless this is configured, so registering is safe.
+        from .api import push
+
+        push.register(rt)
+
     if rt.settings.api_enabled:
         from .api import server as api_server
 

@@ -59,7 +59,7 @@ async def stream(websocket: WebSocket, token: str | None = Query(default=None)) 
     repo.api_device_touch(rt.db, int(device["id"]))
     await websocket.accept()
 
-    with rt.events.subscribe() as queue:
+    with rt.events.subscription() as queue:
         tasks = {
             asyncio.create_task(_forward(websocket, queue)),
             asyncio.create_task(_until_disconnect(websocket)),

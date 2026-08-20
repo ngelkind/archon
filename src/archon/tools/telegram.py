@@ -207,9 +207,14 @@ def register(registry: Registry) -> None:
         scopes=("owner", "inbound"),
     )
     async def tg_notify_owner(ctx: ToolContext, text: str) -> str:
+        from ..api import push
+
         bot = ctx.rt.send_bot()
         if bot is None:
             return json.dumps({"error": "control bot not running"})
         await bot.send_message(ctx.rt.settings.telegram_owner_id, text[:4000],  # type: ignore[attr-defined]
                                parse_mode=None)
+        # Also wake the phone. Content-free: the alert text stays in Telegram
+        # and behind the API; push carries only "there is an alert".
+        await push.owner_alert(ctx.rt, source="tg_notify_owner")
         return json.dumps({"ok": True})

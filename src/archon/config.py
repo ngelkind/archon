@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # value in production (API_TOKEN_PEPPER); the default is a dev placeholder.
     api_token_pepper: str = "dev-insecure-pepper-change-me"
 
+    # --- Push (self-hosted ntfy / UnifiedPush; off by default) ---
+    # Base URL of the ntfy instance, e.g. http://10.8.0.1:8080. Empty = push
+    # disabled and every push call is a cheap no-op. Payloads are content-free
+    # by design: the app fetches details over the tunnel.
+    ntfy_base_url: str = ""
+
     @field_validator("tg_log_channel_id", "telegram_api_id", "telethon_session",
                      "telegram_api_hash", "anthropic_api_key", "openai_api_key",
                      "gemini_api_key", "openrouter_api_key", mode="before")
