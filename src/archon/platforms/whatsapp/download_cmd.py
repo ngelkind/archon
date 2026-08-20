@@ -60,10 +60,16 @@ async def handle_wa_download(rt: Runtime, client: Any, inbound, url: str) -> Non
     chat_candidates.append(inbound.chat_id)
     chat = _to_jid(chat_candidates[0])
 
-    # Delete the /download command (revoke = delete for everyone). Best-effort;
-    # error 479 here does not block the re-send.
+    # Delete the /download command (revoke = delete for everyone). build_revoke
+    # sets fromMe = (myJID.User == sender.User); the message arrived under the
+    # owner's @lid, so passing that @lid as sender made fromMe=False and WhatsApp
+    # rejected it as "deleting someone else's message" (403/479). Pass the
+    # owner's OWN jid as sender (fromMe=True) and revoke on the ORIGINAL chat the
+    # message arrived on, so the message key matches. Best-effort.
     try:
-        await client.revoke_message(chat, _to_jid(inbound.sender_id), inbound.msg_id)
+        me = await client.get_me()
+        own = getattr(me, "JID", None) or _to_jid(inbound.sender_id)
+        await client.revoke_message(_to_jid(inbound.chat_id), own, inbound.msg_id)
     except Exception as exc:  # noqa: BLE001
         rt.audit.note("wa_download_revoke_failed", error=repr(exc)[:150])
 

@@ -24,7 +24,8 @@ async def _send_private_executor(rt: Runtime, payload: dict[str, Any]) -> str:
     client = rt.clients.get("tg_userbot")
     if client is not None:
         from ..platforms.telegram import userbot
-        msg_id = await userbot.send_as_owner(rt, ref, payload["text"])
+        msg_id = await userbot.send_as_owner(rt, ref, payload["text"],
+                                             reply_to=payload.get("reply_to"))
         source = "userbot"
     else:
         bot = rt.clients.get("control_bot")
@@ -55,7 +56,7 @@ async def _send_group_executor(rt: Runtime, payload: dict[str, Any]) -> str:
         if schedule.tzinfo is None:
             schedule = schedule.replace(tzinfo=ZoneInfo(payload.get("tz", "UTC")))
     msg_id = await userbot.send_as_owner(rt, payload["chat_id"], payload["text"],
-                                         schedule=schedule)
+                                         schedule=schedule, reply_to=payload.get("reply_to"))
     verb = "scheduled" if schedule else "sent"
     return f"Telegram group message {verb} to {payload.get('chat_name') or payload['chat_id']} ({msg_id})"
 

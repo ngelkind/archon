@@ -146,14 +146,16 @@ async def _describe_images(rt: Runtime, router, batch: list[InboundMessage],
 
 
 async def _send_reply_now(rt: Runtime, platform: str, chat_id: str,
-                          chat_kind: str, text: str) -> None:
+                          chat_kind: str, text: str,
+                          reply_to: str | None = None) -> None:
     """Send an auto-reply straight to the chat as the owner (no confirm gate —
-    auto-reply chats are the owner's explicit opt-in)."""
+    auto-reply chats are the owner's explicit opt-in). reply_to quotes/tags the
+    message being answered (Telegram)."""
     if platform == "tg":
         from ..tools.telegram import _send_group_executor, _send_private_executor
 
         executor = _send_private_executor if chat_kind == "private" else _send_group_executor
-        await executor(rt, {"chat_id": chat_id, "text": text})
+        await executor(rt, {"chat_id": chat_id, "text": text, "reply_to": reply_to})
     elif platform == "wa":
         from ..tools.whatsapp import _send_executor
 
@@ -206,12 +208,13 @@ async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
         due = compute_due(delay_json) if delay_json else None
         if due is not None and chat_row is not None:
             rt.db.execute(
-                "INSERT INTO pending_replies (chat_pk, draft_text, due_at) VALUES (?, ?, ?)",
-                (chat_row["id"], reply, due.strftime("%Y-%m-%d %H:%M:%S")))
+                "INSERT INTO pending_replies (chat_pk, draft_text, due_at, reply_to) "
+                "VALUES (?, ?, ?, ?)",
+                (chat_row["id"], reply, due.strftime("%Y-%m-%d %H:%M:%S"), m.msg_id))
         else:
             try:
                 await _send_reply_now(rt, first.platform, first.chat_id,
-                                      first.chat_kind, reply)
+                                      first.chat_kind, reply, reply_to=m.msg_id)
             except Exception as exc:  # noqa: BLE001
                 rt.audit.note("auto_reply_send_failed", chat=first.chat_id,
                               error=repr(exc)[:150])

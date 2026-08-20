@@ -68,7 +68,8 @@ async def _fire_pending_replies(rt: Runtime) -> None:
             kind = "tg.send_group"
         try:
             payload = {"chat_id": row["c_chat_id"], "chat_jid": row["c_chat_id"],
-                       "text": row["draft_text"], "chat_name": row["c_name"]}
+                       "text": row["draft_text"], "chat_name": row["c_name"],
+                       "reply_to": row["reply_to"]}
             await _execute(rt, kind or "", payload)
             rt.db.execute("UPDATE pending_replies SET status = 'sent' WHERE id = ?",
                           (row["id"],))

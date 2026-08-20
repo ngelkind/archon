@@ -250,12 +250,19 @@ async def _resolve_ref(client: TelegramClient, ref: str) -> Any:
 
 
 async def send_as_owner(rt: Runtime, chat_id: str, text: str,
-                        schedule: datetime | None = None) -> str:
+                        schedule: datetime | None = None,
+                        reply_to: str | int | None = None) -> str:
     client: TelegramClient | None = rt.clients.get("tg_userbot")  # type: ignore[assignment]
     if client is None:
         raise RuntimeError("Telegram userbot is not connected")
     entity = await _resolve_ref(client, chat_id)
-    msg = await client.send_message(entity, text, schedule=schedule)
+    kwargs: dict[str, Any] = {}
+    if reply_to:
+        try:
+            kwargs["reply_to"] = int(reply_to)  # quote/tag the message we answer
+        except (TypeError, ValueError):
+            pass
+    msg = await client.send_message(entity, text, schedule=schedule, **kwargs)
     return str(getattr(msg, "id", "sent"))
 
 
