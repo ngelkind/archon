@@ -14,7 +14,8 @@ from ..agent.agent import run_agent
 from ..agent.prompts import INBOUND_AGENT_SYSTEM
 from ..agent.triage import triage
 from ..db import repo
-from ..db.tenancy import OWNER_TENANT_ID
+from ..db.tenancy import TenantScope
+from ..tenant import tenant_context
 from ..llm.base import ChatMessage, ProviderError, wrap_untrusted
 from ..logging_ import tglog
 from ..models import InboundMessage
@@ -26,9 +27,13 @@ _DEBOUNCE_S = {"gmail": 5.0, "wa": 20.0, "tg": 20.0}
 
 
 def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
-    """Pure gate. Returns (allowed, reason). Fail closed."""
+    """Pure gate. Returns (allowed, reason). Fail closed.
+
+    Settings are read under the MESSAGE's tenant: one user turning off Gmail
+    triage, or nominating a log channel, must not change anyone else's gate."""
+    store = TenantScope(rt.db, msg.tenant_id)
     # Never process the log channel (the bot posts there; re-ingesting it loops).
-    log_ch = repo.setting_get(rt.db, "log.channel_id", rt.settings.tg_log_channel_id)
+    log_ch = repo.setting_get(store, "log.channel_id", rt.settings.tg_log_channel_id)
     if log_ch is not None and msg.chat_id == str(log_ch):
         return False, "log_channel"
     if msg.is_from_me:
@@ -42,7 +47,7 @@ def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
     if now - ts > _MAX_AGE:
         return False, "stale_message"
     if msg.platform == "gmail":
-        if repo.setting_get(rt.db, "gmail.triage_enabled", True):
+        if repo.setting_get(store, "gmail.triage_enabled", True):
             return True, "gmail_triage_enabled"
         return False, "gmail_triage_disabled"
     if chat_row is not None and chat_row["is_whitelisted"]:
@@ -72,9 +77,10 @@ async def _wa_whitelisted_via_counterpart(rt: Runtime, msg: InboundMessage) -> b
         return False
     if not alt:
         return False
-    alt_row = repo.chat_get(rt.db, "wa", alt)
+    store = TenantScope(rt.db, msg.tenant_id)
+    alt_row = repo.chat_get(store, "wa", alt)
     if alt_row is not None and alt_row["is_whitelisted"]:
-        repo.chat_set_whitelisted_by_chat_id(rt.db, "wa", msg.chat_id)
+        repo.chat_set_whitelisted_by_chat_id(store, "wa", msg.chat_id)
         rt.audit.note("wa_whitelist_linked", lid=msg.chat_id, phone=alt)
         return True
     return False
@@ -206,7 +212,8 @@ async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
         due = compute_due(delay_json) if delay_json else None
         if due is not None and chat_row is not None:
             repo.pending_reply_create(
-                rt.db, chat_pk=chat_row["id"], draft_text=reply,
+                TenantScope(rt.db, first.tenant_id),
+                chat_pk=chat_row["id"], draft_text=reply,
                 due_at=due.strftime("%Y-%m-%d %H:%M:%S"), reply_to=m.msg_id)
         else:
             try:
@@ -227,7 +234,10 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     router: Router = rt.router  # type: ignore[assignment]
     registry: Registry = rt.registry  # type: ignore[assignment]
     first = batch[0]
-    chat_row = repo.chat_get(rt.db, first.platform, first.chat_id)
+    # A batch is per (tenant, chat) by construction — see InboundMessage.chat_key.
+    tenant = tenant_context(rt, first.tenant_id)
+    store = tenant.scope
+    chat_row = repo.chat_get(store, first.platform, first.chat_id)
     chat_pk = chat_row["id"] if chat_row else None
     auto_reply = bool(chat_row["auto_reply"]) if chat_row else False
     persona_id = chat_row["persona_id"] if chat_row else None
@@ -256,7 +266,7 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
 
     persona_block = ""
     if persona_id is not None:
-        persona = repo.persona_by_id(rt.db, persona_id)
+        persona = repo.persona_by_id(store, persona_id)
         if persona:
             persona_block = f"\nPersona for replies in this chat:\n{persona['system_prompt']}\n"
 
@@ -290,13 +300,13 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     if chat_pk is not None:
         history = [
             ChatMessage(role=r["role"], text=r["content"])  # type: ignore[arg-type]
-            for r in repo.context_get(rt.db, chat_pk, persona_id, limit=16)
+            for r in repo.context_get(store, chat_pk, persona_id, limit=16)
             if r["role"] in ("user", "assistant") and r["content"]
         ]
     history.append(ChatMessage(role="user", text=user_text))
 
     ctx = ToolContext(
-        rt=rt, scope="inbound", origin_chat_pk=chat_pk,
+        rt=rt, scope="inbound", origin_chat_pk=chat_pk, tenant=tenant,
         extras={"source_msg_id": first.msg_id, "platform": first.platform,
                 "chat_id": first.chat_id},
     )
@@ -309,9 +319,10 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
             chat_pk=chat_pk,
         )
         if chat_pk is not None:
-            repo.context_add(rt.db, chat_pk, persona_id, "user", combined[:4000])
-            repo.context_add(rt.db, chat_pk, persona_id, "assistant", (result or "")[:4000])
-            repo.context_prune(rt.db, chat_pk, persona_id)
+            repo.context_add(store, chat_pk, persona_id, "user", combined[:4000])
+            repo.context_add(store, chat_pk, persona_id, "assistant",
+                             (result or "")[:4000])
+            repo.context_prune(store, chat_pk, persona_id)
         rt.audit.note("inbound_agent_done", chat=first.chat_id,
                       summary=(result or "")[:200])
     except ProviderError as exc:
@@ -325,25 +336,26 @@ async def run(rt: Runtime) -> None:
     while True:
         msg = await rt.bus.get()
         try:
-            chat_pk = repo.chat_upsert(rt.db, msg.platform, msg.chat_id,
+            store = TenantScope(rt.db, msg.tenant_id)
+            chat_pk = repo.chat_upsert(store, msg.platform, msg.chat_id,
                                        msg.chat_name, msg.chat_kind)
-            chat_row = repo.chat_get(rt.db, msg.platform, msg.chat_id)
+            chat_row = repo.chat_get(store, msg.platform, msg.chat_id)
 
             if msg.is_edit:
-                before = repo.message_mark_edited(rt.db, msg.platform, msg.chat_id,
+                before = repo.message_mark_edited(store, msg.platform, msg.chat_id,
                                                   msg.msg_id, msg.text)
                 await tglog.log_change(rt, msg, before)
             elif msg.is_delete:
-                before = repo.message_mark_deleted(rt.db, msg.platform, msg.chat_id,
+                before = repo.message_mark_deleted(store, msg.platform, msg.chat_id,
                                                    msg.msg_id)
                 await tglog.log_change(rt, msg, before)
             else:
-                repo.message_upsert(rt.db, msg, chat_pk)
+                repo.message_upsert(store, msg, chat_pk)
                 # Identifiers only — the app fetches content over the
                 # authenticated API, so no message text enters the fan-out.
                 rt.events.publish(
-                    "message.new", chat_pk=chat_pk, platform=msg.platform,
-                    chat_id=msg.chat_id, msg_id=msg.msg_id,
+                    "message.new", tenant_id=msg.tenant_id, chat_pk=chat_pk,
+                    platform=msg.platform, chat_id=msg.chat_id, msg_id=msg.msg_id,
                     sender=msg.sender_name or msg.sender_id,
                 )
 
@@ -354,7 +366,7 @@ async def run(rt: Runtime) -> None:
                     allowed, reason = True, "whitelisted_via_lid"
             rt.audit.gate(platform=msg.platform, chat_id=msg.chat_id,
                           sender_id=msg.sender_id, allowed=allowed, reason=reason,
-                          text=msg.text, tenant_id=OWNER_TENANT_ID)
+                          text=msg.text, tenant_id=msg.tenant_id)
             if allowed:
                 debouncer.add(msg)
         except Exception as exc:  # noqa: BLE001 — consumer must survive anything

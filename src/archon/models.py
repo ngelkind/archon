@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from .db.tenancy import OWNER_TENANT_ID
+
 Platform = Literal["wa", "tg", "gmail"]
 Source = Literal["business", "userbot", "wa", "gmail", "subbot", "control"]
 ChatKind = Literal["private", "group", "channel", "email"]
@@ -36,6 +38,11 @@ class InboundMessage:
     msg_id: str
     sender_id: str
     ts: datetime
+    # WHOSE message this is. Every downstream step (cache, gate, triage, agent,
+    # memory, confirm gate) scopes to it, so the tenant travels with the message
+    # rather than being re-derived — there is no ambient "current user" to get
+    # wrong. Defaults to the owner, which is what the single-user adapters mean.
+    tenant_id: int = OWNER_TENANT_ID
     chat_name: str | None = None
     sender_name: str | None = None
     is_from_me: bool = False
@@ -50,8 +57,10 @@ class InboundMessage:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def chat_key(self) -> tuple[str, str]:
-        return (self.platform, self.chat_id)
+    def chat_key(self) -> tuple[int, str, str]:
+        """Debounce/batching key. Includes the tenant so two tenants in the same
+        WhatsApp group are never batched — or triaged — together."""
+        return (self.tenant_id, self.platform, self.chat_id)
 
 
 @dataclass(slots=True)

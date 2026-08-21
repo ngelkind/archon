@@ -91,7 +91,7 @@ async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> 
             rt, kind=kind, payload=payload,
             description=f"Telegram → {payload.get('chat_name') or payload['chat_id']}\n\n"
                         f"{payload['text'][:600]}",
-            chat_pk=row["id"] if row else None,
+            chat_pk=row["id"] if row else None, tenant=ctx.tenant,
         )
         return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
     executor = _send_private_executor if kind == "tg.send_private" else _send_group_executor

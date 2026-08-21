@@ -998,3 +998,20 @@ def oauth_state_consume(db: Db, state: str, provider: str) -> sqlite3.Row | None
 def oauth_state_purge_expired(db: Db) -> int:
     cur = db.execute("DELETE FROM oauth_states WHERE expires_at < ?", (_now(),))
     return int(cur.rowcount)
+
+
+def integration_linked_tenants(db: Db, provider: str) -> list[int]:
+    """Every tenant with a live credential for a provider, ACROSS ALL TENANTS.
+
+    Deliberately unscoped and named so: background pollers are process-wide and
+    must find every linked tenant, then work under each one's own scope. A
+    tenant-scoped version would silently poll only the owner.
+    """
+    return [
+        int(r["tenant_id"])
+        for r in db.query(
+            "SELECT tenant_id FROM integration_credentials "
+            "WHERE provider = ? AND revoked_at IS NULL ORDER BY tenant_id",
+            (provider,),
+        )
+    ]

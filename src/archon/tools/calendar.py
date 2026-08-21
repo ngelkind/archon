@@ -104,7 +104,7 @@ def register(registry: Registry) -> None:
                 ctx.rt, kind="event.create", payload=payload,
                 description=f"{payload.get('title')} @ {payload.get('start_iso')}"
                             + (f" ({payload.get('location')})" if payload.get("location") else ""),
-                chat_pk=ctx.origin_chat_pk,
+                chat_pk=ctx.origin_chat_pk, tenant=ctx.tenant,
             )
             return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
         result = await _create_event_executor(ctx.rt, payload, ctx.store)

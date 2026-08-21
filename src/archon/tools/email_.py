@@ -56,7 +56,7 @@ async def _send_or_confirm(ctx: ToolContext, payload: dict[str, Any]) -> str:
             ctx.rt, kind="email.send", payload=payload,
             description=f"To: {payload['to']}\nSubject: {payload['subject']}\n\n"
                         f"{payload['body'][:800]}",
-            chat_pk=ctx.origin_chat_pk,
+            chat_pk=ctx.origin_chat_pk, tenant=ctx.tenant,
         )
         return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
     result = await _send_executor(ctx.rt, payload, ctx.store)
