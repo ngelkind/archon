@@ -1,0 +1,44 @@
+[Unit]
+Description=Archon PRODUCT service (multi-tenant)
+# Deliberately a separate unit from archon.service: the personal bot and the
+# product must be able to fail, restart and be deployed independently. They
+# share nothing — different database, different data dir, different port.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/archon-product/app
+EnvironmentFile=/opt/archon-product/secrets/.env
+Environment=ARCHON_DATA=/opt/archon-product/data
+Environment=ARCHON_SECRETS=/opt/archon-product/secrets
+Environment=PYTHONUNBUFFERED=1
+# Run the venv Python directly: deps are pre-synced by install.sh, so uv is
+# not needed at runtime and its ~/.cache writes would fail under ProtectHome.
+ExecStart=/opt/archon-product/app/.venv/bin/python -m archon
+Restart=always
+RestartSec=5
+# neonize's Go runtime is slow to unwind on SIGTERM, and the product may hold
+# one such session per linked tenant; cap the stop wait and SIGKILL the whole
+# cgroup so restarts never hang.
+TimeoutStopSec=30
+KillMode=mixed
+
+# Sandboxing: the process can write only its own data/secrets. Note this unit
+# does NOT get ReadWritePaths to /opt/archon/* — the product must not be able
+# to touch the personal bot's database or the owner's credentials, even by
+# accident or misconfiguration.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/archon-product/data /opt/archon-product/secrets /opt/archon-product/app/.venv
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

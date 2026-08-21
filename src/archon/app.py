@@ -24,9 +24,15 @@ _MAX_BACKOFF_S = 300
 
 def build_runtime() -> Runtime:
     settings = load_settings()
-    if not settings.telegram_bot_token or not settings.telegram_owner_id:
+    # The personal bot is meaningless without the owner's Telegram credentials.
+    # The product service has no owner and no control bot — it serves signed-up
+    # tenants through the API and the product bot — so there they are optional.
+    if not settings.multitenant_enabled and (
+        not settings.telegram_bot_token or not settings.telegram_owner_id
+    ):
         raise SystemExit(
-            "TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_ID must be set (see .env.example)."
+            "TELEGRAM_BOT_TOKEN and TELEGRAM_OWNER_ID must be set (see .env.example). "
+            "For a product-only deployment set MULTITENANT_ENABLED=true instead."
         )
     db = Db(settings.db_path)
     version = migrate(db)
@@ -100,8 +106,12 @@ async def _supervise(rt: Runtime, name: str, coro_factory) -> None:
         try:
             _set_health(rt, name, "running")
             await coro_factory()
-            # Clean return means intentional shutdown of that subsystem.
-            _set_health(rt, name, "stopped")
+            # A clean return means the subsystem shut itself down deliberately.
+            # If it left its own explanation ("not configured (…)"), keep it —
+            # overwriting with a bare "stopped" loses the one thing an operator
+            # needs to tell "correctly idle" from "silently broken".
+            if rt.health.get(name) == "running":
+                _set_health(rt, name, "stopped")
             return
         except asyncio.CancelledError:
             _set_health(rt, name, "cancelled")
@@ -121,11 +131,19 @@ async def main() -> None:
     from .platforms.gmail import poller as gmail_poller
 
     rt = build_runtime()
-    tasks = [
-        asyncio.create_task(_supervise(rt, "control_bot", lambda: control.run(rt))),
-        asyncio.create_task(_supervise(rt, "pipeline", lambda: ingest.run(rt))),
-    ]
-    if rt.settings.google_token_path.exists():
+    tasks = [asyncio.create_task(_supervise(rt, "pipeline", lambda: ingest.run(rt)))]
+
+    if rt.settings.telegram_bot_token and rt.settings.telegram_owner_id:
+        tasks.append(
+            asyncio.create_task(_supervise(rt, "control_bot", lambda: control.run(rt)))
+        )
+    else:
+        # Product-only deployment: there is no owner to control.
+        rt.health["control_bot"] = "disabled (no owner Telegram credentials)"
+
+    # The poller serves the owner's token file AND every tenant who linked
+    # Google, so in product mode it must run even with no owner token on disk.
+    if rt.settings.google_token_path.exists() or rt.settings.multitenant_enabled:
         tasks.append(
             asyncio.create_task(_supervise(rt, "gmail", lambda: gmail_poller.run(rt)))
         )
