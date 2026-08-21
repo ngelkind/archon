@@ -23,7 +23,7 @@ def register(registry: Registry) -> None:
     )
     async def log_channel_set(ctx: ToolContext, channel_id: str) -> str:
         value = int(channel_id) if channel_id.strip() else None
-        repo.setting_set(ctx.rt.db, "log.channel_id", value)
+        repo.setting_set(ctx.store, "log.channel_id", value)
         return json.dumps({"ok": True, "log_channel_id": value})
 
     @registry.tool(
@@ -32,7 +32,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def log_channel_test(ctx: ToolContext) -> str:
-        channel = repo.setting_get(ctx.rt.db, "log.channel_id",
+        channel = repo.setting_get(ctx.store, "log.channel_id",
                                    ctx.rt.settings.tg_log_channel_id)
         bot = ctx.rt.clients.get("control_bot")
         if not channel or bot is None:
@@ -52,7 +52,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def redaction_set(ctx: ToolContext, enabled: bool) -> str:
-        repo.setting_set(ctx.rt.db, "log.redact_pii", bool(enabled))
+        repo.setting_set(ctx.store, "log.redact_pii", bool(enabled))
         return json.dumps({"ok": True, "redact_pii": bool(enabled)})
 
     @registry.tool(
@@ -76,7 +76,7 @@ def register(registry: Registry) -> None:
             params.append(platform)
         where += " ORDER BY id DESC LIMIT ?"
         params.append(min(int(limit), 50))
-        rows = repo.message_search(ctx.rt.db, where, tuple(params))
+        rows = repo.message_search(ctx.store, where, tuple(params))
         keep = ("platform", "chat_id", "sender_name", "sender_id", "ts", "text",
                 "edited_text", "deleted_at", "edited_at")
         return json.dumps([{k: r[k] for k in keep} for r in rows],
@@ -94,12 +94,6 @@ def register(registry: Registry) -> None:
         },
     )
     async def audit_query(ctx: ToolContext, contains: str = "", limit: int = 30) -> str:
-        sql = "SELECT ts, actor, action, detail_json FROM audit"
-        params: list = []
-        if contains:
-            sql += " WHERE action LIKE ? OR detail_json LIKE ?"
-            params += [f"%{contains}%", f"%{contains}%"]
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(min(int(limit), 100))
-        rows = ctx.rt.db.query(sql, tuple(params))
+        rows = repo.audit_query(ctx.store, contains=contains,
+                                limit=min(int(limit), 100))
         return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)

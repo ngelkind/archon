@@ -29,7 +29,7 @@ def register(registry: Registry) -> None:
     )
     async def persona_create(ctx: ToolContext, name: str, system_prompt: str,
                              model_override: str = "") -> str:
-        repo.persona_upsert(ctx.rt.db, name.strip(), system_prompt,
+        repo.persona_upsert(ctx.store, name.strip(), system_prompt,
                             model_override or None)
         return json.dumps({"ok": True, "persona": name.strip()})
 
@@ -38,10 +38,10 @@ def register(registry: Registry) -> None:
         "List personas and which chats they are assigned to.",
     )
     async def persona_list(ctx: ToolContext) -> str:
-        personas = repo.persona_list(ctx.rt.db)
+        personas = repo.persona_list(ctx.store)
         out = []
         for p in personas:
-            chats = repo.persona_chats(ctx.rt.db, p["id"])
+            chats = repo.persona_chats(ctx.store, p["id"])
             out.append({
                 "name": p["name"],
                 "system_prompt": p["system_prompt"][:300],
@@ -61,7 +61,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def persona_delete(ctx: ToolContext, name: str) -> str:
-        deleted = repo.persona_delete(ctx.rt.db, name.strip())
+        deleted = repo.persona_delete(ctx.store, name.strip())
         return json.dumps({"ok": deleted > 0, "persona": name})
 
     @registry.tool(
@@ -81,16 +81,16 @@ def register(registry: Registry) -> None:
     )
     async def persona_assign(ctx: ToolContext, platform: str, chat_id: str,
                              persona_name: str) -> str:
-        row = repo.chat_get(ctx.rt.db, platform, chat_id)
+        row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat — use chat_find first"})
         if not persona_name.strip():
-            repo.chat_set_field(ctx.rt.db, row["id"], "persona_id", None)
+            repo.chat_set_field(ctx.store, row["id"], "persona_id", None)
             return json.dumps({"ok": True, "chat": row["name"] or chat_id, "persona": None})
-        persona = repo.persona_by_name(ctx.rt.db, persona_name.strip())
+        persona = repo.persona_by_name(ctx.store, persona_name.strip())
         if persona is None:
             return json.dumps({"error": f"no persona named {persona_name!r}"})
-        repo.chat_set_field(ctx.rt.db, row["id"], "persona_id", persona["id"])
+        repo.chat_set_field(ctx.store, row["id"], "persona_id", persona["id"])
         return json.dumps({"ok": True, "chat": row["name"] or chat_id,
                            "persona": persona_name.strip()})
 
@@ -107,10 +107,10 @@ def register(registry: Registry) -> None:
         },
     )
     async def context_show(ctx: ToolContext, platform: str, chat_id: str) -> str:
-        row = repo.chat_get(ctx.rt.db, platform, chat_id)
+        row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat"})
-        rows = repo.context_get(ctx.rt.db, row["id"], row["persona_id"], limit=20)
+        rows = repo.context_get(ctx.store, row["id"], row["persona_id"], limit=20)
         return json.dumps([{"role": r["role"], "content": r["content"][:400]}
                            for r in rows], ensure_ascii=False)
 
@@ -128,8 +128,8 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def context_clear(ctx: ToolContext, platform: str, chat_id: str) -> str:
-        row = repo.chat_get(ctx.rt.db, platform, chat_id)
+        row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat"})
-        repo.context_clear(ctx.rt.db, row["id"], row["persona_id"])
+        repo.context_clear(ctx.store, row["id"], row["persona_id"])
         return json.dumps({"ok": True})

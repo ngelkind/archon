@@ -111,7 +111,7 @@ def register(registry: Registry) -> None:
         scopes=("owner",),
     )
     async def wa_list_groups(ctx: ToolContext) -> str:
-        rows = repo.chat_list(ctx.rt.db, platform="wa")
+        rows = repo.chat_list(ctx.store, platform="wa")
         return json.dumps([
             {"jid": r["chat_id"], "name": r["name"], "kind": r["kind"],
              "whitelisted": bool(r["is_whitelisted"])}
@@ -132,12 +132,12 @@ def register(registry: Registry) -> None:
         scopes=("owner", "inbound"),
     )
     async def wa_get_history(ctx: ToolContext, chat_jid: str, limit: int = 30) -> str:
-        row = repo.chat_get(ctx.rt.db, "wa", chat_jid)
+        row = repo.chat_get(ctx.store, "wa", chat_jid)
         if row is None:
             return json.dumps({"error": "unknown chat"})
         if ctx.scope == "inbound" and ctx.extras.get("chat_id") != chat_jid:
             return json.dumps({"error": "inbound runs may only read the originating chat"})
-        rows = repo.message_history(ctx.rt.db, row["id"], min(int(limit), 100))
+        rows = repo.message_history(ctx.store, row["id"], min(int(limit), 100))
         return json.dumps([
             {"from": "me" if r["is_from_me"] else (r["sender_name"] or r["sender_id"]),
              "ts": r["ts"], "text": r["text"],
@@ -156,10 +156,10 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def wa_mark_read(ctx: ToolContext, chat_jid: str) -> str:
-        row = repo.chat_get(ctx.rt.db, "wa", chat_jid)
+        row = repo.chat_get(ctx.store, "wa", chat_jid)
         if row is None:
             return json.dumps({"error": "unknown chat"})
-        rows = repo.message_history(ctx.rt.db, row["id"], 10)
+        rows = repo.message_history(ctx.store, row["id"], 10)
         ids = [r["msg_id"] for r in rows if not r["is_from_me"]]
         if ids:
             await sender.mark_read(ctx.rt, chat_jid, ids)

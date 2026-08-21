@@ -162,7 +162,7 @@ def register(registry: Registry) -> None:
     async def tg_list_dialogs(ctx: ToolContext, refresh: bool = False) -> str:
         if refresh:
             count = await userbot.refresh_dialogs(ctx.rt)
-        rows = repo.chat_list(ctx.rt.db, platform="tg")
+        rows = repo.chat_list(ctx.store, platform="tg")
         return json.dumps([
             {"chat_id": r["chat_id"], "name": r["name"], "kind": r["kind"],
              "whitelisted": bool(r["is_whitelisted"])}
@@ -183,12 +183,12 @@ def register(registry: Registry) -> None:
         scopes=("owner", "inbound"),
     )
     async def tg_get_history(ctx: ToolContext, chat_id: str, limit: int = 30) -> str:
-        row = repo.chat_get(ctx.rt.db, "tg", chat_id)
+        row = repo.chat_get(ctx.store, "tg", chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat"})
         if ctx.scope == "inbound" and ctx.extras.get("chat_id") != chat_id:
             return json.dumps({"error": "inbound runs may only read the originating chat"})
-        rows = repo.message_history(ctx.rt.db, row["id"], min(int(limit), 100))
+        rows = repo.message_history(ctx.store, row["id"], min(int(limit), 100))
         return json.dumps([
             {"from": "me" if r["is_from_me"] else (r["sender_name"] or r["sender_id"]),
              "ts": r["ts"], "text": r["text"],

@@ -193,7 +193,7 @@ def register(registry: Registry) -> None:
             _client(ctx.rt).delete_event,
             calendar_id=_default_calendar(ctx.rt), event_id=event_id,
         )
-        repo.event_created_mark_cancelled(ctx.rt.db, event_id)
+        repo.event_created_mark_cancelled(ctx.store, event_id)
         return json.dumps({"status": "deleted", "event_id": event_id})
 
     @registry.tool(
@@ -245,5 +245,5 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def calendar_set_default(ctx: ToolContext, calendar_id: str) -> str:
-        repo.setting_set(ctx.rt.db, "calendar.default_id", calendar_id)
+        repo.setting_set(ctx.store, "calendar.default_id", calendar_id)
         return json.dumps({"ok": True, "default": calendar_id})

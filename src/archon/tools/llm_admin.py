@@ -29,7 +29,7 @@ def register(registry: Registry) -> None:
         router: Router = ctx.rt.router  # type: ignore[assignment]
         router.invalidate()
         router._get_provider(provider)  # validates the key exists; raises if not
-        repo.setting_set(ctx.rt.db, "llm.active_provider", provider)
+        repo.setting_set(ctx.store, "llm.active_provider", provider)
         return json.dumps({"ok": True, "active_provider": provider})
 
     @registry.tool(
@@ -44,7 +44,7 @@ def register(registry: Registry) -> None:
             "cheap_model": router.model_for(name, "triage"),
             "strong_model": router.model_for(name, "agent"),
             "daily_budget_usd": repo.setting_get(
-                ctx.rt.db, "llm.daily_budget_usd", ctx.rt.settings.llm_daily_budget_usd),
+                ctx.store, "llm.daily_budget_usd", ctx.rt.settings.llm_daily_budget_usd),
         })
 
     @registry.tool(
@@ -65,9 +65,9 @@ def register(registry: Registry) -> None:
     async def llm_set_model(ctx: ToolContext, provider: str, tier: str, model: str) -> str:
         key = f"llm.model.{provider}.{tier}"
         if model.strip():
-            repo.setting_set(ctx.rt.db, key, model.strip())
+            repo.setting_set(ctx.store, key, model.strip())
         else:
-            repo.setting_set(ctx.rt.db, key, None)
+            repo.setting_set(ctx.store, key, None)
         return json.dumps({"ok": True, "provider": provider, "tier": tier,
                            "model": model or PROVIDER_DEFAULTS.get(provider, {}).get(tier)})
 
@@ -87,7 +87,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def llm_set_key(ctx: ToolContext, provider: str, api_key: str) -> str:
-        repo.setting_set(ctx.rt.db, f"llm.key.{provider}", api_key.strip())
+        repo.setting_set(ctx.store, f"llm.key.{provider}", api_key.strip())
         router: Router = ctx.rt.router  # type: ignore[assignment]
         router.invalidate(provider)
         return json.dumps({"ok": True, "provider": provider, "key_len": len(api_key.strip())})
@@ -103,7 +103,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def budget_set(ctx: ToolContext, usd_per_day: float) -> str:
-        repo.setting_set(ctx.rt.db, "llm.daily_budget_usd", float(usd_per_day))
+        repo.setting_set(ctx.store, "llm.daily_budget_usd", float(usd_per_day))
         return json.dumps({"ok": True, "daily_budget_usd": float(usd_per_day)})
 
     @registry.tool(
@@ -113,7 +113,7 @@ def register(registry: Registry) -> None:
     async def cost_report(ctx: ToolContext) -> str:
         out = {}
         for label, expr in (("day", "-1 day"), ("week", "-7 days"), ("month", "-30 days")):
-            row = repo.llm_cost_since(ctx.rt.db, expr)
+            row = repo.llm_cost_since(ctx.store, expr)
             out[label] = {
                 "cost_usd": round(float(row["cost"]), 4),
                 "calls": row["calls"],
@@ -133,7 +133,7 @@ def register(registry: Registry) -> None:
     )
     async def cost_breakdown(ctx: ToolContext, period: str) -> str:
         expr = {"day": "-1 day", "week": "-7 days", "month": "-30 days"}[period]
-        rows = repo.llm_cost_breakdown(ctx.rt.db, expr)
+        rows = repo.llm_cost_breakdown(ctx.store, expr)
         return json.dumps([
             {"provider": r["provider"], "model": r["model"], "purpose": r["purpose"],
              "calls": r["calls"], "cost_usd": round(float(r["cost"]), 4)}

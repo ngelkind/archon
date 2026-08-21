@@ -24,7 +24,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def capture_all_dms_set(ctx: ToolContext, enabled: bool) -> str:
-        repo.setting_set(ctx.rt.db, "capture.all_dms", bool(enabled))
+        repo.setting_set(ctx.store, "capture.all_dms", bool(enabled))
         return json.dumps({"ok": True, "capture_all_dms": bool(enabled)})
 
     @registry.tool(
@@ -42,15 +42,15 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def capture_add(ctx: ToolContext, platform: str, chat_id: str) -> str:
-        row = repo.chat_get(ctx.rt.db, platform, chat_id)
+        row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             # Upsert so an as-yet-unseen chat can be armed (e.g. a known group).
-            pk = repo.chat_upsert(ctx.rt.db, platform, chat_id, None,
+            pk = repo.chat_upsert(ctx.store, platform, chat_id, None,
                                   "group" if chat_id.endswith(("@g.us",)) or chat_id.startswith("-")
                                   else "private")
         else:
             pk = row["id"]
-        repo.chat_set_field(ctx.rt.db, pk, "capture_media", 1)
+        repo.chat_set_field(ctx.store, pk, "capture_media", 1)
         return json.dumps({"ok": True, "chat": (row["name"] if row else chat_id),
                            "capture": True})
 
@@ -68,10 +68,10 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def capture_remove(ctx: ToolContext, platform: str, chat_id: str) -> str:
-        row = repo.chat_get(ctx.rt.db, platform, chat_id)
+        row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat"})
-        repo.chat_set_field(ctx.rt.db, row["id"], "capture_media", 0)
+        repo.chat_set_field(ctx.store, row["id"], "capture_media", 0)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "capture": False})
 
     @registry.tool(
@@ -80,9 +80,9 @@ def register(registry: Registry) -> None:
         "list of individually-armed chats.",
     )
     async def capture_list(ctx: ToolContext) -> str:
-        rows = repo.chat_list_capture_armed(ctx.rt.db)
+        rows = repo.chat_list_capture_armed(ctx.store)
         return json.dumps({
-            "all_dms": repo.setting_get(ctx.rt.db, "capture.all_dms", False),
+            "all_dms": repo.setting_get(ctx.store, "capture.all_dms", False),
             "armed_chats": [
                 {"platform": r["platform"], "chat_id": r["chat_id"],
                  "name": r["name"], "kind": r["kind"]}

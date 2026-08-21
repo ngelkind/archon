@@ -82,7 +82,7 @@ def register(registry: Registry) -> None:
         "List scheduled messages (pending and recently sent/failed).",
     )
     async def schedule_list(ctx: ToolContext) -> str:
-        rows = repo.schedule_list(ctx.rt.db, limit=30)
+        rows = repo.schedule_list(ctx.store, limit=30)
         return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
 
     @registry.tool(
@@ -97,7 +97,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def schedule_cancel(ctx: ToolContext, schedule_id: int) -> str:
-        ok = repo.schedule_cancel(ctx.rt.db, schedule_id)
+        ok = repo.schedule_cancel(ctx.store, schedule_id)
         return json.dumps({"ok": ok, "id": schedule_id})
 
     @registry.tool(
@@ -149,12 +149,12 @@ def register(registry: Registry) -> None:
     )
     async def delay_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                                mode: str, min_s: float = 0, max_s: float = 0) -> str:
-        row = repo.chat_get(ctx.rt.db, platform, chat_id)
+        row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat"})
         policy = None if mode == "none" else json.dumps(
             {"mode": mode, "min_s": min_s, "max_s": max_s or min_s})
-        repo.chat_set_field(ctx.rt.db, row["id"], "delay_policy_json", policy)
+        repo.chat_set_field(ctx.store, row["id"], "delay_policy_json", policy)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id,
                            "policy": parse_policy(policy)})
 
@@ -163,7 +163,7 @@ def register(registry: Registry) -> None:
         "List queued (delayed) auto-replies.",
     )
     async def pending_replies_list(ctx: ToolContext) -> str:
-        rows = repo.pending_reply_list(ctx.rt.db, limit=30)
+        rows = repo.pending_reply_list(ctx.store, limit=30)
         return json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str)
 
     @registry.tool(
@@ -177,5 +177,5 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def pending_reply_cancel(ctx: ToolContext, reply_id: int) -> str:
-        ok = repo.pending_reply_cancel(ctx.rt.db, reply_id)
+        ok = repo.pending_reply_cancel(ctx.store, reply_id)
         return json.dumps({"ok": ok, "id": reply_id})

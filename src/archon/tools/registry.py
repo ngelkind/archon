@@ -40,6 +40,13 @@ class ToolContext:
     tenant: Any = None
 
     @property
+    def tenant_id(self) -> int:
+        """Whose data this run acts on; the owner when no tenant is attached."""
+        from ..db.tenancy import OWNER_TENANT_ID
+
+        return self.tenant.tenant_id if self.tenant is not None else OWNER_TENANT_ID
+
+    @property
     def store(self):
         """The database handle a tool should use: this run's tenant scope, or
         the raw Db (owner-scoped by repo) when no tenant is attached."""
@@ -102,7 +109,8 @@ class Registry:
             return json.dumps({"error": f"unknown tool: {name}"})
         if ctx.scope not in tool.scopes:
             ctx.rt.audit.tool(name=name, args=args, ok=False,
-                              result_summary="denied: out of scope")
+                              result_summary="denied: out of scope",
+                              tenant_id=ctx.tenant_id)
             return json.dumps({"error": f"tool {name} is not available in this context"})
         try:
             sig = inspect.signature(tool.handler)
@@ -114,9 +122,11 @@ class Registry:
             }
             result = await tool.handler(ctx, **accepted)
             ctx.rt.audit.tool(name=name, args=args if tool.sensitive else {},
-                              ok=True, result_summary=str(result)[:200])
+                              ok=True, result_summary=str(result)[:200],
+                              tenant_id=ctx.tenant_id)
             return result
         except Exception as exc:  # noqa: BLE001 — errors go back to the model
             ctx.rt.audit.tool(name=name, args=args, ok=False,
-                              result_summary=repr(exc)[:200])
+                              result_summary=repr(exc)[:200],
+                              tenant_id=ctx.tenant_id)
             return json.dumps({"error": f"{type(exc).__name__}: {exc}"})

@@ -77,7 +77,7 @@ def register(registry: Registry) -> None:
             except ProviderError as exc:
                 return json.dumps({"error": str(exc)})
 
-        if repo.setting_get(ctx.rt.db, "web.ddg_enabled", False):
+        if repo.setting_get(ctx.store, "web.ddg_enabled", False):
             try:
                 from ddgs import DDGS
 

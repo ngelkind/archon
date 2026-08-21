@@ -14,6 +14,7 @@ from ..agent.agent import run_agent
 from ..agent.prompts import INBOUND_AGENT_SYSTEM
 from ..agent.triage import triage
 from ..db import repo
+from ..db.tenancy import OWNER_TENANT_ID
 from ..llm.base import ChatMessage, ProviderError, wrap_untrusted
 from ..logging_ import tglog
 from ..models import InboundMessage
@@ -353,7 +354,7 @@ async def run(rt: Runtime) -> None:
                     allowed, reason = True, "whitelisted_via_lid"
             rt.audit.gate(platform=msg.platform, chat_id=msg.chat_id,
                           sender_id=msg.sender_id, allowed=allowed, reason=reason,
-                          text=msg.text)
+                          text=msg.text, tenant_id=OWNER_TENANT_ID)
             if allowed:
                 debouncer.add(msg)
         except Exception as exc:  # noqa: BLE001 — consumer must survive anything

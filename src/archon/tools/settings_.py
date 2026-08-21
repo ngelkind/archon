@@ -50,7 +50,7 @@ def register(registry: Registry) -> None:
         },
     )
     async def chat_list(ctx: ToolContext, platform: str = "") -> str:
-        rows = repo.chat_list(ctx.rt.db, platform=platform or None)
+        rows = repo.chat_list(ctx.store, platform=platform or None)
         return json.dumps([
             {"platform": r["platform"], "chat_id": r["chat_id"], "name": r["name"],
              "kind": r["kind"], "whitelisted": bool(r["is_whitelisted"]),
@@ -93,7 +93,7 @@ def register(registry: Registry) -> None:
     )
     async def whitelist_add(ctx: ToolContext, platform: str, chat_id: str) -> str:
         row = _get_chat_or_error(ctx.rt, platform, chat_id)
-        repo.chat_set_field(ctx.rt.db, row["id"], "is_whitelisted", 1)
+        repo.chat_set_field(ctx.store, row["id"], "is_whitelisted", 1)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "whitelisted": True})
 
     @registry.tool(
@@ -111,7 +111,7 @@ def register(registry: Registry) -> None:
     )
     async def whitelist_remove(ctx: ToolContext, platform: str, chat_id: str) -> str:
         row = _get_chat_or_error(ctx.rt, platform, chat_id)
-        repo.chat_set_field(ctx.rt.db, row["id"], "is_whitelisted", 0)
+        repo.chat_set_field(ctx.store, row["id"], "is_whitelisted", 0)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "whitelisted": False})
 
     @registry.tool(
@@ -132,7 +132,7 @@ def register(registry: Registry) -> None:
     async def send_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                               policy: str) -> str:
         row = _get_chat_or_error(ctx.rt, platform, chat_id)
-        repo.chat_set_field(ctx.rt.db, row["id"], "send_policy", policy)
+        repo.chat_set_field(ctx.store, row["id"], "send_policy", policy)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "send_policy": policy})
 
     @registry.tool(
@@ -152,7 +152,7 @@ def register(registry: Registry) -> None:
     async def auto_reply_set(ctx: ToolContext, platform: str, chat_id: str,
                              enabled: bool) -> str:
         row = _get_chat_or_error(ctx.rt, platform, chat_id)
-        repo.chat_set_field(ctx.rt.db, row["id"], "auto_reply", int(enabled))
+        repo.chat_set_field(ctx.store, row["id"], "auto_reply", int(enabled))
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "auto_reply": enabled})
 
     @registry.tool(
@@ -173,7 +173,7 @@ def register(registry: Registry) -> None:
     async def image_recognition_set(ctx: ToolContext, platform: str, chat_id: str,
                                     enabled: bool) -> str:
         row = _get_chat_or_error(ctx.rt, platform, chat_id)
-        repo.chat_set_field(ctx.rt.db, row["id"], "image_recognition", int(enabled))
+        repo.chat_set_field(ctx.store, row["id"], "image_recognition", int(enabled))
         return json.dumps({"ok": True, "chat": row["name"] or chat_id,
                            "image_recognition": enabled})
 
@@ -194,7 +194,7 @@ def register(registry: Registry) -> None:
     async def chat_log_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                                   enabled: bool) -> str:
         row = _get_chat_or_error(ctx.rt, platform, chat_id)
-        repo.chat_set_field(ctx.rt.db, row["id"], "log_deletes", int(enabled))
+        repo.chat_set_field(ctx.store, row["id"], "log_deletes", int(enabled))
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "log_deletes": enabled})
 
     @registry.tool(
@@ -207,8 +207,8 @@ def register(registry: Registry) -> None:
     )
     async def settings_get(ctx: ToolContext, key: str = "") -> str:
         if key:
-            return json.dumps({key: repo.setting_get(ctx.rt.db, key)}, ensure_ascii=False)
-        rows = repo.setting_all(ctx.rt.db)
+            return json.dumps({key: repo.setting_get(ctx.store, key)}, ensure_ascii=False)
+        rows = repo.setting_all(ctx.store)
         redacted = {}
         for r in rows:
             redacted[r["key"]] = "•••" if ".key." in r["key"] or r["key"].startswith("llm.key") \
@@ -236,5 +236,5 @@ def register(registry: Registry) -> None:
             value = json.loads(value_json)
         except json.JSONDecodeError:
             value = value_json  # treat as plain string
-        repo.setting_set(ctx.rt.db, key, value)
+        repo.setting_set(ctx.store, key, value)
         return json.dumps({"ok": True, "key": key, "value": value}, ensure_ascii=False)

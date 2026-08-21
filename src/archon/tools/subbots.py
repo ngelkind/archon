@@ -35,7 +35,7 @@ def register(registry: Registry) -> None:
             return json.dumps({"error": f"token rejected by Telegram: {type(exc).__name__}"})
         finally:
             await bot.session.close()
-        repo.sub_bot_create(ctx.rt.db, token=token,
+        repo.sub_bot_create(ctx.store, token=token,
                             bot_username=me.username or str(me.id),
                             platform_scope=platform_scope)
         return json.dumps({"ok": True, "bot": f"@{me.username}",
@@ -47,7 +47,7 @@ def register(registry: Registry) -> None:
         "List registered sub-bots.",
     )
     async def subbot_list(ctx: ToolContext) -> str:
-        rows = repo.sub_bot_list(ctx.rt.db)
+        rows = repo.sub_bot_list(ctx.store)
         return json.dumps(
             [{k: r[k] for k in ("id", "bot_username", "platform_scope", "enabled",
                                 "created_at")} for r in rows],
@@ -67,7 +67,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def subbot_set_enabled(ctx: ToolContext, subbot_id: int, enabled: bool) -> str:
-        ok = repo.sub_bot_set_enabled(ctx.rt.db, subbot_id, enabled)
+        ok = repo.sub_bot_set_enabled(ctx.store, subbot_id, enabled)
         return json.dumps({"ok": ok, "id": subbot_id, "enabled": enabled})
 
     @registry.tool(
@@ -81,5 +81,5 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def subbot_remove(ctx: ToolContext, subbot_id: int) -> str:
-        ok = repo.sub_bot_delete(ctx.rt.db, subbot_id)
+        ok = repo.sub_bot_delete(ctx.store, subbot_id)
         return json.dumps({"ok": ok, "id": subbot_id})

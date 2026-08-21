@@ -37,8 +37,10 @@ class AuditLog:
         except OSError:
             pass  # Best effort; VM dirs are 700 via install.sh.
 
-    def _write(self, record: dict[str, Any]) -> None:
+    def _write(self, record: dict[str, Any], tenant_id: int | None = None) -> None:
         record["ts"] = time.time()
+        if tenant_id is not None:
+            record["tenant_id"] = tenant_id
         line = json.dumps(record, ensure_ascii=False, sort_keys=True, default=str)
         try:
             with self.path.open("a", encoding="utf-8") as handle:
@@ -47,7 +49,8 @@ class AuditLog:
             print(f"[audit] WARNING: could not write to {self.path}")
         if self.db is not None:
             try:
-                audit_add(self.db, record.get("event", "note"), record.get("action", ""), record)
+                audit_add(self.db, record.get("event", "note"), record.get("action", ""),
+                          record, tenant_id=tenant_id)
             except Exception:
                 pass  # DB mirror is best-effort; JSONL is the source of truth.
 
@@ -60,6 +63,7 @@ class AuditLog:
         allowed: bool,
         reason: str,
         text: str | None = None,
+        tenant_id: int | None = None,
     ) -> None:
         record: dict[str, Any] = {
             "event": "gate",
@@ -71,9 +75,10 @@ class AuditLog:
         }
         if allowed and self.store_content and text is not None:
             record["text"] = text
-        self._write(record)
+        self._write(record, tenant_id)
 
-    def tool(self, *, name: str, args: dict[str, Any], ok: bool, result_summary: str) -> None:
+    def tool(self, *, name: str, args: dict[str, Any], ok: bool,
+             result_summary: str, tenant_id: int | None = None) -> None:
         self._write(
             {
                 "event": "tool",
@@ -81,8 +86,10 @@ class AuditLog:
                 "args": args,
                 "ok": ok,
                 "result": result_summary[:500],
-            }
+            },
+            tenant_id,
         )
 
-    def note(self, message: str, **fields: Any) -> None:
-        self._write({"event": "note", "action": message, **fields})
+    def note(self, message: str, tenant_id: int | None = None, **fields: Any) -> None:
+        """``tenant_id`` None = a SYSTEM note (startup, subsystem_crash)."""
+        self._write({"event": "note", "action": message, **fields}, tenant_id)

@@ -19,6 +19,10 @@ from difflib import SequenceMatcher
 
 from .db import Db
 from .db import repo
+from .db.tenancy import TenantScope
+
+#: A raw Db (single-user -> owner tenant) or a tenant-bound scope.
+Store = Db | TenantScope
 
 # Cyrillic -> Latin (lowercase). Values may be multi-character.
 _CYR = {
@@ -47,7 +51,7 @@ def normalize_phone(raw: str) -> str:
     return "+" + digits if digits else ""
 
 
-def import_csv(db: Db, text: str) -> int:
+def import_csv(db: Store, text: str) -> int:
     """Import a Google Contacts CSV export. Returns the number of rows added."""
     text = text.lstrip("﻿")
     reader = csv.DictReader(io.StringIO(text))
@@ -78,12 +82,12 @@ def import_csv(db: Db, text: str) -> int:
     return added
 
 
-def remember(db: Db, name: str, phone: str) -> None:
+def remember(db: Store, name: str, phone: str) -> None:
     phone = normalize_phone(phone)
     repo.contact_add(db, name, phone, normalize(name), "alias")
 
 
-def search(db: Db, query: str, limit: int = 12) -> list[dict]:
+def search(db: Store, query: str, limit: int = 12) -> list[dict]:
     q = (query or "").strip()
     qn = normalize(q)
     ql = q.lower()

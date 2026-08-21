@@ -26,7 +26,7 @@ def register(registry: Registry) -> None:
         scopes=("owner", "inbound"),
     )
     async def contact_search(ctx: ToolContext, query: str) -> str:
-        matches = directory.search(ctx.rt.db, query)
+        matches = directory.search(ctx.store, query)
         return json.dumps({"query": query, "matches": matches}, ensure_ascii=False)
 
     @registry.tool(
@@ -40,7 +40,7 @@ def register(registry: Registry) -> None:
         scopes=("owner",), sensitive=True,
     )
     async def contact_remember(ctx: ToolContext, name: str, phone: str) -> str:
-        directory.remember(ctx.rt.db, name, phone)
+        directory.remember(ctx.store, name, phone)
         return json.dumps({"ok": True, "remembered": {name: directory.normalize_phone(phone)}},
                           ensure_ascii=False)
 
@@ -59,7 +59,7 @@ def register(registry: Registry) -> None:
                 text = fh.read()
         except OSError as exc:
             return json.dumps({"error": f"cannot read {path}: {exc}"})
-        n = directory.import_csv(ctx.rt.db, text)
+        n = directory.import_csv(ctx.store, text)
         return json.dumps({"imported": n})
 
     @registry.tool(
@@ -69,6 +69,6 @@ def register(registry: Registry) -> None:
         scopes=("owner",),
     )
     async def contacts_stats(ctx: ToolContext) -> str:
-        row = repo.contact_counts(ctx.rt.db)
+        row = repo.contact_counts(ctx.store)
         return json.dumps({"entries": row["entries"],
                            "unique_numbers": row["unique_numbers"]})

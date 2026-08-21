@@ -10,9 +10,10 @@ the scope and injected into the SQL here; it is never taken from a caller
 argument, so no caller can address another tenant's rows by passing an id.
 See ``db/tenancy.py`` for the reasoning and the tripwire.
 
-Accessors for genuinely global tables (users, refresh_tokens, api_pair_codes,
-audit) still take a plain ``Db`` — they are identity/process state, not
-per-user data.
+Accessors for genuinely global tables (users, refresh_tokens, api_pair_codes)
+still take a plain ``Db`` — they are identity/process state, not per-user data.
+``audit`` is tenanted with a NULLABLE tenant_id: NULL marks a SYSTEM row that
+belongs to the process rather than a person (see 009_audit_tenant.sql).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Any
 
 from ..models import InboundMessage
 from . import Db
-from .tenancy import TenantScope, as_scope
+from .tenancy import OWNER_TENANT_ID, TenantScope, as_scope
 
 Store = Db | TenantScope
 
@@ -545,11 +546,40 @@ def refresh_tokens_revoke_all(db: Db, user_id: int) -> int:
 
 # --- audit ------------------------------------------------------------------
 
-def audit_add(db: Db, actor: str, action: str, detail: dict[str, Any] | None = None) -> None:
+def audit_add(db: Db, actor: str, action: str, detail: dict[str, Any] | None = None,
+              tenant_id: int | None = None) -> None:
+    """Append an audit row. ``tenant_id`` None means a SYSTEM row (startup,
+    subsystem crash) that belongs to the process rather than to a person."""
     db.execute(
-        "INSERT INTO audit (actor, action, detail_json) VALUES (?, ?, ?)",
-        (actor, action, json.dumps(detail, ensure_ascii=False, default=str) if detail else None),
+        "INSERT INTO audit (tenant_id, actor, action, detail_json) VALUES (?, ?, ?, ?)",
+        (tenant_id, actor, action,
+         json.dumps(detail, ensure_ascii=False, default=str) if detail else None),
     )
+
+
+def audit_query(store: Store, *, contains: str = "", limit: int = 30) -> list[sqlite3.Row]:
+    """This tenant's audit rows, newest first.
+
+    The owner additionally sees SYSTEM rows (``tenant_id IS NULL``): on the
+    personal bot, process events like startup and subsystem_crash are the
+    owner's own operational history, and hiding them would be a regression in
+    the single-user ``audit_query`` tool. A product tenant sees only their own
+    rows — never another tenant's, and never the process's.
+    """
+    sc = as_scope(store)
+    sql = "SELECT ts, actor, action, detail_json FROM audit WHERE ("
+    params: list[Any] = []
+    if sc.tenant_id == OWNER_TENANT_ID:
+        sql += "tenant_id = ? OR tenant_id IS NULL)"
+    else:
+        sql += "tenant_id = ?)"
+    params.append(sc.tenant_id)
+    if contains:
+        sql += " AND (action LIKE ? OR detail_json LIKE ?)"
+        params += [f"%{contains}%", f"%{contains}%"]
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    return sc.query(sql, tuple(params))
 
 
 # --- personas ---------------------------------------------------------------
