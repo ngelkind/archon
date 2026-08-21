@@ -35,7 +35,9 @@ from ..db import repo
 from ..db.tenancy import OWNER_TENANT_ID
 from ..runtime import Runtime
 
-Executor = Callable[[Runtime, dict[str, Any]], Awaitable[str]]
+# (rt, payload, store) -> result. `store` is the TENANT SCOPE the action was
+# raised under, so an executor writes to the right tenant, not the owner.
+Executor = Callable[[Runtime, dict[str, Any], Any], Awaitable[str]]
 _EXECUTORS: dict[str, Executor] = {}
 
 # (rt, action_id, kind, description, payload) -> None
@@ -117,11 +119,12 @@ async def request_confirmation(
     return action_id
 
 
-async def _execute(rt: Runtime, kind: str, payload: dict[str, Any]) -> str:
+async def _execute(rt: Runtime, kind: str, payload: dict[str, Any],
+                   store: Any = None) -> str:
     executor = _EXECUTORS.get(kind)
     if executor is None:
         return f"no executor registered for {kind}"
-    return await executor(rt, payload)
+    return await executor(rt, payload, store if store is not None else rt.db)
 
 
 async def resolve_action(
@@ -159,7 +162,7 @@ async def resolve_action(
 
     rt.audit.note("confirm_approved", action_id=action_id, kind=row["kind"], actor=actor)
     try:
-        result = await _execute(rt, row["kind"], json.loads(row["payload_json"]))
+        result = await _execute(rt, row["kind"], json.loads(row["payload_json"]), store)
         outcome = Outcome("approved", result)
     except Exception as exc:  # noqa: BLE001 — a failed executor must still close the action
         rt.audit.note("confirm_execute_failed", action_id=action_id,

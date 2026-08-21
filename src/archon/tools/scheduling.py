@@ -57,9 +57,9 @@ def register(registry: Registry) -> None:
             if due.tzinfo is None:
                 due = due.replace(tzinfo=ZoneInfo(tz))
             msg_id = await userbot.send_as_owner(rt, chat_id, text, schedule=due)
-            chat_pk = repo.chat_upsert(rt.db, "tg", chat_id, None, "group")
+            chat_pk = repo.chat_upsert(ctx.store, "tg", chat_id, None, "group")
             repo.schedule_create(
-                rt.db, platform="tg", chat_pk=chat_pk, text=text,
+                ctx.store, platform="tg", chat_pk=chat_pk, text=text,
                 due_at=_to_utc_str(due_iso, tz), status="delegated_native",
                 tg_native_id=int(msg_id),
             )
@@ -67,10 +67,10 @@ def register(registry: Registry) -> None:
 
         chat_kind = "email" if platform == "gmail" else (
             "group" if chat_id.endswith("@g.us") else "private")
-        chat_pk = repo.chat_upsert(rt.db, platform, chat_id, None, chat_kind)
+        chat_pk = repo.chat_upsert(ctx.store, platform, chat_id, None, chat_kind)
         result_extra = json.dumps({"subject": subject}) if subject else None
         sched_id = repo.schedule_create(
-            rt.db, platform=platform, chat_pk=chat_pk, text=text,
+            ctx.store, platform=platform, chat_pk=chat_pk, text=text,
             media_path=image_path or None, due_at=_to_utc_str(due_iso, tz),
             result=result_extra,
         )

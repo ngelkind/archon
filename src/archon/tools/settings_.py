@@ -7,13 +7,12 @@ import difflib
 import json
 
 from ..db import repo
-from ..runtime import Runtime
 from .registry import Registry, ToolContext
 
 
-def _find_chat(rt: Runtime, platform: str | None, approx_name: str) -> list[dict]:
+def _find_chat(store, platform: str | None, approx_name: str) -> list[dict]:
     """Fuzzy-match a chat by name across the chats registry."""
-    rows = repo.chat_list(rt.db, platform=platform)
+    rows = repo.chat_list(store, platform=platform)
     scored = []
     query = approx_name.casefold().strip()
     for r in rows:
@@ -32,8 +31,8 @@ def _find_chat(rt: Runtime, platform: str | None, approx_name: str) -> list[dict
     ]
 
 
-def _get_chat_or_error(rt: Runtime, platform: str, chat_id: str):
-    row = repo.chat_get(rt.db, platform, chat_id)
+def _get_chat_or_error(store, platform: str, chat_id: str):
+    row = repo.chat_get(store, platform, chat_id)
     if row is None:
         raise ValueError(f"unknown chat {platform}:{chat_id} — use chat_list/wa_list_groups first")
     return row
@@ -73,7 +72,7 @@ def register(registry: Registry) -> None:
         },
     )
     async def chat_find(ctx: ToolContext, approx_name: str, platform: str = "") -> str:
-        return json.dumps(_find_chat(ctx.rt, platform or None, approx_name),
+        return json.dumps(_find_chat(ctx.store, platform or None, approx_name),
                           ensure_ascii=False)
 
     @registry.tool(
@@ -92,7 +91,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def whitelist_add(ctx: ToolContext, platform: str, chat_id: str) -> str:
-        row = _get_chat_or_error(ctx.rt, platform, chat_id)
+        row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "is_whitelisted", 1)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "whitelisted": True})
 
@@ -110,7 +109,7 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def whitelist_remove(ctx: ToolContext, platform: str, chat_id: str) -> str:
-        row = _get_chat_or_error(ctx.rt, platform, chat_id)
+        row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "is_whitelisted", 0)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "whitelisted": False})
 
@@ -131,7 +130,7 @@ def register(registry: Registry) -> None:
     )
     async def send_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                               policy: str) -> str:
-        row = _get_chat_or_error(ctx.rt, platform, chat_id)
+        row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "send_policy", policy)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "send_policy": policy})
 
@@ -151,7 +150,7 @@ def register(registry: Registry) -> None:
     )
     async def auto_reply_set(ctx: ToolContext, platform: str, chat_id: str,
                              enabled: bool) -> str:
-        row = _get_chat_or_error(ctx.rt, platform, chat_id)
+        row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "auto_reply", int(enabled))
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "auto_reply": enabled})
 
@@ -172,7 +171,7 @@ def register(registry: Registry) -> None:
     )
     async def image_recognition_set(ctx: ToolContext, platform: str, chat_id: str,
                                     enabled: bool) -> str:
-        row = _get_chat_or_error(ctx.rt, platform, chat_id)
+        row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "image_recognition", int(enabled))
         return json.dumps({"ok": True, "chat": row["name"] or chat_id,
                            "image_recognition": enabled})
@@ -193,7 +192,7 @@ def register(registry: Registry) -> None:
     )
     async def chat_log_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                                   enabled: bool) -> str:
-        row = _get_chat_or_error(ctx.rt, platform, chat_id)
+        row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "log_deletes", int(enabled))
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "log_deletes": enabled})
 

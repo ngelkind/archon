@@ -13,7 +13,7 @@ from ..runtime import Runtime
 from .registry import Registry, ToolContext
 
 
-async def _send_executor(rt: Runtime, payload: dict[str, Any]) -> str:
+async def _send_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     if payload.get("image_path"):
         msg_id = await sender.send_image(rt, payload["chat_jid"], payload["image_path"],
                                          payload.get("text"))
@@ -28,7 +28,7 @@ confirm.register_executor("wa.send", _send_executor)
 async def _send_or_confirm(ctx: ToolContext, chat_jid: str, text: str | None,
                            image_path: str | None = None) -> str:
     rt = ctx.rt
-    row = repo.chat_get(rt.db, "wa", chat_jid)
+    row = repo.chat_get(ctx.store, "wa", chat_jid)
     chat_name = row["name"] if row else chat_jid
 
     if ctx.scope == "inbound":
@@ -47,10 +47,9 @@ async def _send_or_confirm(ctx: ToolContext, chat_jid: str, text: str | None,
 
         due = compute_due(row["delay_policy_json"])
         if due is not None:
-            rt.db.execute(
-                "INSERT INTO pending_replies (chat_pk, draft_text, due_at) VALUES (?, ?, ?)",
-                (row["id"], text, due.strftime("%Y-%m-%d %H:%M:%S")),
-            )
+            repo.pending_reply_create(
+                ctx.store, chat_pk=row["id"], draft_text=text,
+                due_at=due.strftime("%Y-%m-%d %H:%M:%S"))
             return json.dumps({"status": "queued_delayed",
                                "due_utc": due.isoformat(timespec="seconds")})
 

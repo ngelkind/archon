@@ -42,7 +42,7 @@ async def _fire_scheduled(rt: Runtime) -> None:
                 payload = {"chat_id": row["c_chat_id"], "chat_jid": row["c_chat_id"],
                            "text": row["text"], "chat_name": row["c_name"],
                            "image_path": row["media_path"]}
-            result = await _execute(rt, kind or "", payload)
+            result = await _execute(rt, kind or "", payload, scope)
             repo.schedule_set_status(scope, row["id"], "sent", str(result)[:300])
             rt.audit.note("scheduled_sent", id=row["id"], platform=row["platform"])
         except Exception as exc:  # noqa: BLE001
@@ -61,7 +61,7 @@ async def _fire_pending_replies(rt: Runtime) -> None:
             payload = {"chat_id": row["c_chat_id"], "chat_jid": row["c_chat_id"],
                        "text": row["draft_text"], "chat_name": row["c_name"],
                        "reply_to": row["reply_to"]}
-            await _execute(rt, kind or "", payload)
+            await _execute(rt, kind or "", payload, scope)
             repo.pending_reply_set_status(scope, row["id"], "sent")
             rt.audit.note("delayed_reply_sent", id=row["id"])
         except Exception as exc:  # noqa: BLE001

@@ -25,7 +25,7 @@ def _client(rt: Runtime) -> GmailClient:
     return client  # type: ignore[return-value]
 
 
-async def _send_executor(rt: Runtime, payload: dict[str, Any]) -> str:
+async def _send_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     msg_id = await asyncio.to_thread(
         _client(rt).send,
         to=payload["to"], subject=payload["subject"], body=payload["body"],
@@ -33,13 +33,12 @@ async def _send_executor(rt: Runtime, payload: dict[str, Any]) -> str:
         thread_id=payload.get("thread_id"),
         in_reply_to=payload.get("in_reply_to"),
     )
-    chat_pk = repo.chat_upsert(rt.db, "gmail", payload["to"].lower(), payload["to"], "email")
-    rt.db.execute(
-        "INSERT OR IGNORE INTO messages (chat_pk, platform, chat_id, msg_id, source, "
-        "sender_id, is_from_me, ts, text) VALUES (?, 'gmail', ?, ?, 'gmail', 'me', 1, "
-        "datetime('now'), ?)",
-        (chat_pk, payload["to"].lower(), msg_id,
-         f"Subject: {payload['subject']}\n\n{payload['body']}"),
+    chat_pk = repo.chat_upsert(store, "gmail", payload["to"].lower(), payload["to"],
+                               "email")
+    repo.message_cache_outgoing(
+        store, chat_pk=chat_pk, platform="gmail", chat_id=payload["to"].lower(),
+        msg_id=msg_id, source="gmail",
+        text=f"Subject: {payload['subject']}\n\n{payload['body']}",
     )
     return f"email to {payload['to']} sent (id {msg_id})"
 
@@ -47,13 +46,13 @@ async def _send_executor(rt: Runtime, payload: dict[str, Any]) -> str:
 confirm.register_executor("email.send", _send_executor)
 
 
-def _policy_for(rt: Runtime, address: str) -> str:
-    row = repo.chat_get(rt.db, "gmail", address.lower())
+def _policy_for(store, address: str) -> str:
+    row = repo.chat_get(store, "gmail", address.lower())
     return row["send_policy"] if row else "confirm"
 
 
 async def _send_or_confirm(ctx: ToolContext, payload: dict[str, Any]) -> str:
-    if ctx.scope == "inbound" or _policy_for(ctx.rt, payload["to"]) == "confirm":
+    if ctx.scope == "inbound" or _policy_for(ctx.store, payload["to"]) == "confirm":
         action_id = await confirm.request_confirmation(
             ctx.rt, kind="email.send", payload=payload,
             description=f"To: {payload['to']}\nSubject: {payload['subject']}\n\n"

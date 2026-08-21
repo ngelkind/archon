@@ -15,7 +15,7 @@ from ..runtime import Runtime
 from .registry import Registry, ToolContext
 
 
-async def _send_private_executor(rt: Runtime, payload: dict[str, Any]) -> str:
+async def _send_private_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     ref = str(payload["chat_id"])
     chat_name = payload.get("chat_name")
     # Prefer the userbot: it IS the owner's account (sends as the owner) and can
@@ -29,7 +29,7 @@ async def _send_private_executor(rt: Runtime, payload: dict[str, Any]) -> str:
         source = "userbot"
     else:
         bot = rt.clients.get("control_bot")
-        conn_id = repo.setting_get(rt.db, "tg.business_connection_id", None)
+        conn_id = repo.setting_get(store, "tg.business_connection_id", None)
         if bot is None or not conn_id:
             raise RuntimeError("cannot send: Telegram userbot is down and there is "
                                "no Business connection")
@@ -40,16 +40,14 @@ async def _send_private_executor(rt: Runtime, payload: dict[str, Any]) -> str:
         source = "business"
     # Cache only when we have a numeric chat id (ref may be a phone/username).
     if ref.lstrip("-").isdigit():
-        chat_pk = repo.chat_upsert(rt.db, "tg", ref, chat_name, "private")
-        rt.db.execute(
-            "INSERT OR IGNORE INTO messages (chat_pk, platform, chat_id, msg_id, source, "
-            "sender_id, is_from_me, ts, text) VALUES (?, 'tg', ?, ?, ?, 'me', 1, "
-            "datetime('now'), ?)",
-            (chat_pk, ref, str(msg_id), source, payload["text"]))
+        chat_pk = repo.chat_upsert(store, "tg", ref, chat_name, "private")
+        repo.message_cache_outgoing(
+            store, chat_pk=chat_pk, platform="tg", chat_id=ref,
+            msg_id=str(msg_id), source=source, text=payload["text"])
     return f"Telegram message to {chat_name or ref} sent (as you)"
 
 
-async def _send_group_executor(rt: Runtime, payload: dict[str, Any]) -> str:
+async def _send_group_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     schedule = None
     if payload.get("schedule_iso"):
         schedule = datetime.fromisoformat(payload["schedule_iso"])
@@ -67,7 +65,7 @@ confirm.register_executor("tg.send_group", _send_group_executor)
 
 async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> str:
     rt = ctx.rt
-    row = repo.chat_get(rt.db, "tg", payload["chat_id"])
+    row = repo.chat_get(ctx.store, "tg", payload["chat_id"])
     payload.setdefault("chat_name", row["name"] if row else None)
 
     if ctx.scope == "inbound":
@@ -82,10 +80,9 @@ async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> 
 
         due = compute_due(row["delay_policy_json"])
         if due is not None:
-            rt.db.execute(
-                "INSERT INTO pending_replies (chat_pk, draft_text, due_at) VALUES (?, ?, ?)",
-                (row["id"], payload["text"], due.strftime("%Y-%m-%d %H:%M:%S")),
-            )
+            repo.pending_reply_create(
+                ctx.store, chat_pk=row["id"], draft_text=payload["text"],
+                due_at=due.strftime("%Y-%m-%d %H:%M:%S"))
             return json.dumps({"status": "queued_delayed",
                                "due_utc": due.isoformat(timespec="seconds")})
 

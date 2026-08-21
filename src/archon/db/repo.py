@@ -877,6 +877,19 @@ def chat_list_capture_armed(store: Store) -> list[sqlite3.Row]:
     )
 
 
+def message_cache_outgoing(store: Store, *, chat_pk: int, platform: str,
+                           chat_id: str, msg_id: str, source: str,
+                           text: str | None) -> None:
+    """Cache a message WE sent, so history/edit/delete tracking sees it too."""
+    sc = as_scope(store)
+    sc.execute(
+        "INSERT OR IGNORE INTO messages (tenant_id, chat_pk, platform, chat_id, msg_id, "
+        "source, sender_id, is_from_me, ts, text) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'me', 1, datetime('now'), ?)",
+        (sc.tenant_id, chat_pk, platform, chat_id, msg_id, source, text),
+    )
+
+
 def message_exists(store: Store, platform: str, msg_id: str) -> bool:
     sc = as_scope(store)
     return sc.query_one(

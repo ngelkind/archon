@@ -75,7 +75,7 @@ def test_confirm_flow_creates_row_and_executor_runs(tmp_path):
     rt = make_rt(tmp_path)
     ran: list[dict] = []
 
-    async def fake_executor(rt_, payload):
+    async def fake_executor(rt_, payload, store=None):
         ran.append(payload)
         return "done"
 

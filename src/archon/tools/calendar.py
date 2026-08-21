@@ -42,15 +42,15 @@ def _client(rt: Runtime) -> CalendarClient:
     return client  # type: ignore[return-value]
 
 
-def _default_calendar(rt: Runtime) -> str:
-    return str(repo.setting_get(rt.db, "calendar.default_id", "primary"))
+def _default_calendar(store) -> str:
+    return str(repo.setting_get(store, "calendar.default_id", "primary"))
 
 
-async def _create_event_executor(rt: Runtime, payload: dict[str, Any]) -> str:
+async def _create_event_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     client = _client(rt)
     created = await asyncio.to_thread(
         client.create_event,
-        calendar_id=payload.get("calendar_id") or _default_calendar(rt),
+        calendar_id=payload.get("calendar_id") or _default_calendar(store),
         title=payload["title"],
         start_iso=payload["start_iso"],
         end_iso=payload.get("end_iso"),
@@ -60,9 +60,9 @@ async def _create_event_executor(rt: Runtime, payload: dict[str, Any]) -> str:
         rrule=payload.get("rrule"),
     )
     repo.event_created_add(
-        rt.db, chat_pk=payload.get("chat_pk"),
+        store, chat_pk=payload.get("chat_pk"),
         source_msg_id=payload.get("source_msg_id"), gcal_event_id=created["id"],
-        calendar_id=payload.get("calendar_id") or _default_calendar(rt),
+        calendar_id=payload.get("calendar_id") or _default_calendar(store),
         title=payload["title"], start_ts=payload["start_iso"],
         end_ts=payload.get("end_iso"),
     )

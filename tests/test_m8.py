@@ -35,7 +35,7 @@ def test_scheduler_fires_due_messages(tmp_path):
     rt = make_rt(tmp_path)
     sent: list[dict] = []
 
-    async def fake_wa_send(rt_, payload):
+    async def fake_wa_send(rt_, payload, store=None):
         sent.append(payload)
         return "ok"
 
@@ -58,7 +58,7 @@ def test_pending_reply_fires(tmp_path):
     rt = make_rt(tmp_path)
     sent = []
 
-    async def fake_send(rt_, payload):
+    async def fake_send(rt_, payload, store=None):
         sent.append(payload)
         return "ok"
 

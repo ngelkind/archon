@@ -84,7 +84,7 @@ def test_resolve_action_is_single_use(tmp_path):
     rt = make_rt(tmp_path)
     ran: list[dict] = []
 
-    async def executor(rt_, payload):
+    async def executor(rt_, payload, store=None):
         ran.append(payload)
         return "sent"
 
@@ -123,7 +123,7 @@ def test_resolve_action_reject_expired_and_unknown(tmp_path):
 def test_resolve_action_failed_executor_still_closes(tmp_path):
     rt = make_rt(tmp_path)
 
-    async def boom(rt_, payload):
+    async def boom(rt_, payload, store=None):
         raise RuntimeError("send failed")
 
     confirm.register_executor("boom.kind", boom)
@@ -179,7 +179,7 @@ def test_approvals_list_and_decision(tmp_path):
     rt = make_rt(tmp_path)
     ran: list[dict] = []
 
-    async def executor(rt_, payload):
+    async def executor(rt_, payload, store=None):
         ran.append(payload)
         return "ok!"
 
@@ -362,7 +362,7 @@ def test_two_concurrent_approvals_execute_exactly_once(tmp_path):
     rt = make_rt(tmp_path)
     ran: list[str] = []
 
-    async def slow_executor(rt_, payload):
+    async def slow_executor(rt_, payload, store=None):
         await asyncio.sleep(0.01)  # widen the window between claim and finish
         ran.append("executed")
         return "sent"
