@@ -103,7 +103,14 @@ say "Installing dependencies + systemd unit"
 sudo ARCHON_REPO_URL="$REPO_URL" ARCHON_BRANCH="$BRANCH" bash "$APP_DIR/deploy/product/install.sh"
 
 say "Local health check (401 = up and rejecting anonymous = correct)"
-code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/auth/me" || echo 000)"
+# The app runs migrations + boots subsystems before the API binds (~8s), so poll
+# rather than fire once — a single immediate curl races the boot and false-fails.
+code=000
+for _ in $(seq 1 20); do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/auth/me" 2>/dev/null || echo 000)"
+  [[ "$code" == "401" ]] && break
+  sleep 2
+done
 echo "  GET /auth/me -> $code"
 [[ "$code" == "401" ]] || die "service not answering 401 on :$PORT — check: journalctl -u archon-product -n 50"
 
