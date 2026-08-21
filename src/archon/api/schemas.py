@@ -227,6 +227,36 @@ class WhatsAppStatus(BaseModel):
     last_error: str | None = None
 
 
+class TelegramUserbotConsent(BaseModel):
+    version: str
+    warning: str
+    risk: str
+    reversible: bool
+    safe_alternative: str
+
+
+class TelegramUserbotStart(BaseModel):
+    phone: str
+    consent_acknowledged: bool = False
+    consent_version: str | None = None
+
+
+class TelegramUserbotComplete(BaseModel):
+    code: str
+    password: str | None = None      # only for accounts with 2FA
+
+
+class TelegramUserbotStatus(BaseModel):
+    linked: bool
+    status: str
+    phone: str | None = None
+    username: str | None = None
+    consent_version: str | None = None
+    consent_acknowledged_at: str | None = None
+    logged_in_at: str | None = None
+    last_error: str | None = None
+
+
 class IntegrationLinkStart(BaseModel):
     authorize_url: str
     state: str

@@ -1244,3 +1244,103 @@ def whatsapp_linked_tenants(db: Db) -> list[sqlite3.Row]:
         "SELECT tenant_id, phone_jid, status FROM whatsapp_links "
         "WHERE revoked_at IS NULL AND status = 'paired' ORDER BY tenant_id"
     )
+
+
+# --- telegram userbot links (BYO account, consent-gated) ---------------------
+
+def tg_userbot_create(store: Store, *, consent_version: str, phone: str) -> int:
+    """Start a userbot link, recording the consent that permitted it.
+
+    Any previous live link is revoked first: two Telethon sessions for one
+    tenant would both act as that person, and Telegram treats concurrent
+    unofficial sessions as a signal worth flagging.
+    """
+    sc = as_scope(store)
+    sc.execute(
+        "UPDATE telegram_userbot_links SET revoked_at = ? "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (_now(), sc.tenant_id),
+    )
+    cur = sc.execute(
+        "INSERT INTO telegram_userbot_links (tenant_id, phone, status, "
+        "consent_version, consent_acknowledged_at, last_status_at) "
+        "VALUES (?, ?, 'pending', ?, ?, ?)",
+        (sc.tenant_id, phone, consent_version, _now(), _now()),
+    )
+    return int(cur.lastrowid)
+
+
+def tg_userbot_get(store: Store) -> sqlite3.Row | None:
+    sc = as_scope(store)
+    return sc.query_one(
+        "SELECT * FROM telegram_userbot_links "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (sc.tenant_id,),
+    )
+
+
+def tg_userbot_set_status(store: Store, *, status: str,
+                          last_error: str | None = None,
+                          tg_user_id: str | None = None,
+                          tg_username: str | None = None) -> bool:
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE telegram_userbot_links SET status = ?, last_error = ?, "
+        "tg_user_id = COALESCE(?, tg_user_id), "
+        "tg_username = COALESCE(?, tg_username), last_status_at = ?, "
+        "logged_in_at = CASE WHEN ? = 'active' AND logged_in_at IS NULL "
+        "                    THEN ? ELSE logged_in_at END "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (status, last_error, tg_user_id, tg_username, _now(), status, _now(),
+         sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def tg_userbot_store_login_hash(store: Store, envelope: str | None) -> bool:
+    """Hold Telethon's phone_code_hash between send-code and sign-in.
+
+    Encrypted like everything else and cleared the moment login completes — it
+    is a short-lived half of a login handshake, not durable state.
+    """
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE telegram_userbot_links SET login_hash_envelope = ?, "
+        "last_status_at = ? WHERE tenant_id = ? AND revoked_at IS NULL",
+        (envelope, _now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def tg_userbot_store_session(store: Store, envelope: str | None) -> bool:
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE telegram_userbot_links SET session_envelope = ?, "
+        "last_status_at = ? WHERE tenant_id = ? AND revoked_at IS NULL",
+        (envelope, _now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def tg_userbot_revoke(store: Store) -> bool:
+    """Revoke and wipe the session. The consent row is retained as history."""
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE telegram_userbot_links SET revoked_at = ?, status = 'logged_out', "
+        "session_envelope = NULL, login_hash_envelope = NULL "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (_now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def tg_userbot_active_tenants(db: Db) -> list[sqlite3.Row]:
+    """Every tenant with a live userbot session, ACROSS ALL TENANTS.
+
+    Unscoped by design — the session supervisor is process-wide, like the
+    scheduler's accessors.
+    """
+    return db.query(
+        "SELECT tenant_id, phone, tg_username FROM telegram_userbot_links "
+        "WHERE revoked_at IS NULL AND status = 'active' ORDER BY tenant_id"
+    )

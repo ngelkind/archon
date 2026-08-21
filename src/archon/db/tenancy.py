@@ -44,6 +44,7 @@ TENANTED_TABLES = frozenset({
     # NULLABLE tenant_id: NULL marks a SYSTEM row (see 009_audit_tenant.sql).
     "audit",
     "integration_credentials", "telegram_links", "whatsapp_links",
+    "telegram_userbot_links",
 })
 
 #: Intentionally global: identity, process bookkeeping, and the system log.
@@ -138,6 +139,7 @@ _PURGE_ORDER = (
     "pending_replies", "pending_actions", "llm_calls", "api_devices",
     "sub_bots", "contacts", "settings", "gmail_state", "chats", "personas",
     "audit", "integration_credentials", "telegram_links", "whatsapp_links",
+    "telegram_userbot_links",
     # Pre-auth handshake rows also carry a tenant_id FK, so an account that ever
     # STARTED a link flow cannot be deleted until these go too.
     "oauth_states", "telegram_link_codes",

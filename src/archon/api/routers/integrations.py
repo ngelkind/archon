@@ -20,12 +20,15 @@ from fastapi.responses import HTMLResponse
 
 from ...integrations import google as google_integration
 from ...integrations import telegram as tg_integration
+from ...integrations import telegram_userbot as tg_userbot
 from ...integrations import whatsapp as wa_integration
 from ..auth import require_device
 from ..schemas import (
     IntegrationLinkStart, IntegrationStatus, IntegrationStatusList,
     TelegramLinkStart, TelegramStatus, ToolCallResponse,
-    WhatsAppConsent, WhatsAppLinkRequest, WhatsAppStatus,
+    TelegramUserbotComplete, TelegramUserbotConsent, TelegramUserbotStart,
+    TelegramUserbotStatus, WhatsAppConsent, WhatsAppLinkRequest,
+    WhatsAppStatus,
 )
 
 router = APIRouter(tags=["integrations"])
@@ -99,6 +102,82 @@ async def telegram_unlink(request: Request,
                           device: sqlite3.Row = Depends(require_device)):
     rt = request.app.state.rt
     revoked = tg_integration.unlink(rt, int(device["tenant_id"]))
+    return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
+
+
+@authed.get("/integrations/telegram/userbot/consent",
+            response_model=TelegramUserbotConsent)
+async def telegram_userbot_consent(request: Request,
+                                   device: sqlite3.Row = Depends(require_device)):
+    """The ban warning the app must display, verbatim, before offering to link."""
+    return TelegramUserbotConsent(**tg_userbot.consent_notice())
+
+
+@authed.post("/integrations/telegram/userbot/start",
+             response_model=TelegramUserbotStatus)
+async def telegram_userbot_start(body: TelegramUserbotStart, request: Request,
+                                 device: sqlite3.Row = Depends(require_device)):
+    """Send the login code. REFUSED (400) unless the risk was acknowledged."""
+    from ...db.tenancy import TenantScope
+
+    rt = request.app.state.rt
+    tenant_id = int(device["tenant_id"])
+    try:
+        await tg_userbot.start_login(
+            rt, tenant_id, phone=body.phone,
+            consent_acknowledged=body.consent_acknowledged,
+            consent_version=body.consent_version,
+        )
+    except tg_userbot.ConsentRequired as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc)) from exc
+    except tg_userbot.UserbotLinkError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc)) from exc
+    return TelegramUserbotStatus(
+        **tg_userbot.status(rt, TenantScope(rt.db, tenant_id)))
+
+
+@authed.post("/integrations/telegram/userbot/complete",
+             response_model=TelegramUserbotStatus)
+async def telegram_userbot_complete(body: TelegramUserbotComplete, request: Request,
+                                    device: sqlite3.Row = Depends(require_device)):
+    """Finish signing in. 409 means the account has 2FA and needs a password."""
+    from ...db.tenancy import TenantScope
+
+    rt = request.app.state.rt
+    tenant_id = int(device["tenant_id"])
+    try:
+        await tg_userbot.complete_login(rt, tenant_id, code=body.code,
+                                        password=body.password)
+    except tg_userbot.PasswordRequired as exc:
+        # A distinct code so the app can prompt for the password and retry,
+        # rather than treating it as a failed login.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=str(exc)) from exc
+    except tg_userbot.UserbotLinkError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc)) from exc
+    return TelegramUserbotStatus(
+        **tg_userbot.status(rt, TenantScope(rt.db, tenant_id)))
+
+
+@authed.get("/integrations/telegram/userbot",
+            response_model=TelegramUserbotStatus)
+async def telegram_userbot_status(request: Request,
+                                  device: sqlite3.Row = Depends(require_device)):
+    from ...db.tenancy import TenantScope
+
+    rt = request.app.state.rt
+    return TelegramUserbotStatus(
+        **tg_userbot.status(rt, TenantScope(rt.db, int(device["tenant_id"]))))
+
+
+@authed.delete("/integrations/telegram/userbot", response_model=ToolCallResponse)
+async def telegram_userbot_unlink(request: Request,
+                                  device: sqlite3.Row = Depends(require_device)):
+    rt = request.app.state.rt
+    revoked = await tg_userbot.unlink(rt, int(device["tenant_id"]))
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 

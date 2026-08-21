@@ -32,9 +32,18 @@ class Settings(BaseSettings):
     tg_log_channel_id: int | None = None  # configurable at runtime via settings table too
 
     # --- Telegram userbot (M6) ---
+    # SINGLE-USER: all three together are the owner's own MTProto session.
+    # MULTITENANT: api_id/api_hash become APP-level credentials that every
+    # tenant's login rides on (one app registration, many user accounts), and
+    # are REQUIRED for the per-tenant userbot integration. telethon_session
+    # stays owner-only and must NOT be set on a product deployment — it is one
+    # person's account, not app configuration.
+    # NOTE: Telegram rate-limits and flags at the api_id level, so a single
+    # shared id across many tenants is a correlated-failure surface — see
+    # integrations/telegram_userbot.py.
     telegram_api_id: int | None = None
     telegram_api_hash: str | None = None
-    telethon_session: str | None = None  # StringSession
+    telethon_session: str | None = None  # StringSession — OWNER ONLY
 
     # --- LLM provider keys (only the active provider's key must be present) ---
     anthropic_api_key: str | None = None
