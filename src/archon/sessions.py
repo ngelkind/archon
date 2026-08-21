@@ -61,6 +61,8 @@ class SessionRegistry:
     def __init__(self, *, max_idle_s: int = _DEFAULT_MAX_IDLE_S,
                  max_sessions: int = _DEFAULT_MAX_SESSIONS) -> None:
         self._factories: dict[SessionKind, SessionFactory] = {}
+        self._on_evict: dict[SessionKind, Callable[[Any, int], Any]] = {}
+        self._rt: Any = None
         self._sessions: dict[tuple[int, SessionKind], Session] = {}
         self._locks: dict[tuple[int, SessionKind], asyncio.Lock] = {}
         self.max_idle_s = max_idle_s
@@ -68,10 +70,17 @@ class SessionRegistry:
 
     # --- registration --------------------------------------------------------
 
-    def register_factory(self, kind: SessionKind, factory: SessionFactory) -> None:
-        """Teach the registry how to build one kind of session. Called by the
-        integration modules at startup."""
+    def register_factory(self, kind: SessionKind, factory: SessionFactory,
+                         on_evict: Callable[[Any, int], Any] | None = None) -> None:
+        """Teach the registry how to build one kind of session.
+
+        ``on_evict(rt, tenant_id)`` runs just before a session is dropped, for
+        integrations that must persist state first — WhatsApp writes its
+        linked-device session back encrypted and removes the plaintext file.
+        """
         self._factories[kind] = factory
+        if on_evict is not None:
+            self._on_evict[kind] = on_evict
 
     def has_factory(self, kind: SessionKind) -> bool:
         return kind in self._factories
@@ -88,6 +97,7 @@ class SessionRegistry:
         if tenant_id <= 0:
             raise ValueError(f"invalid tenant_id: {tenant_id!r}")
         key = (tenant_id, kind)
+        self._rt = rt          # remembered so eviction hooks have a runtime
         existing = self._sessions.get(key)
         if existing is not None:
             existing.touch()
@@ -163,6 +173,14 @@ class SessionRegistry:
     async def _close(self, session: Session) -> None:
         """Best-effort close. A client that cannot be closed must not block
         eviction — the alternative is leaking a live session forever."""
+        hook = self._on_evict.get(session.kind)
+        if hook is not None and self._rt is not None:
+            try:
+                result = hook(self._rt, session.tenant_id)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # noqa: BLE001 — a failed hook must not leak the session
+                pass
         closer = getattr(session.client, "close", None) or getattr(
             session.client, "disconnect", None
         )

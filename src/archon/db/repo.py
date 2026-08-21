@@ -1165,3 +1165,82 @@ def message_last_inbound_ts(store: Store, chat_pk: int) -> str | None:
         (sc.tenant_id, chat_pk),
     )
     return row["ts"] if row and row["ts"] else None
+
+
+# --- whatsapp links (BYO, consent-gated) -------------------------------------
+
+def whatsapp_link_create(store: Store, *, consent_version: str) -> int:
+    """Start a link for this tenant, recording the consent that permitted it.
+
+    Any previous live link is revoked first: two sessions for one tenant would
+    fight over the same linked device, and WhatsApp treats that as suspicious.
+    """
+    sc = as_scope(store)
+    sc.execute(
+        "UPDATE whatsapp_links SET revoked_at = ? "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (_now(), sc.tenant_id),
+    )
+    cur = sc.execute(
+        "INSERT INTO whatsapp_links (tenant_id, status, consent_version, "
+        "consent_acknowledged_at, last_status_at) VALUES (?, 'pending', ?, ?, ?)",
+        (sc.tenant_id, consent_version, _now(), _now()),
+    )
+    return int(cur.lastrowid)
+
+
+def whatsapp_link_get(store: Store) -> sqlite3.Row | None:
+    sc = as_scope(store)
+    return sc.query_one(
+        "SELECT * FROM whatsapp_links WHERE tenant_id = ? AND revoked_at IS NULL",
+        (sc.tenant_id,),
+    )
+
+
+def whatsapp_link_set_status(store: Store, *, status: str,
+                             phone_jid: str | None = None,
+                             last_error: str | None = None) -> bool:
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE whatsapp_links SET status = ?, "
+        "phone_jid = COALESCE(?, phone_jid), last_error = ?, last_status_at = ?, "
+        "paired_at = CASE WHEN ? = 'paired' AND paired_at IS NULL THEN ? ELSE paired_at END "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (status, phone_jid, last_error, _now(), status, _now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def whatsapp_link_store_session(store: Store, envelope: str | None) -> bool:
+    """Persist (or clear) the encrypted session blob for this tenant."""
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE whatsapp_links SET session_envelope = ?, last_status_at = ? "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (envelope, _now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def whatsapp_link_revoke(store: Store) -> bool:
+    """Revoke and wipe the stored session. The consent row itself is retained —
+    it is the record of what the user agreed to, and survives unlinking."""
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE whatsapp_links SET revoked_at = ?, status = 'logged_out', "
+        "session_envelope = NULL WHERE tenant_id = ? AND revoked_at IS NULL",
+        (_now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def whatsapp_linked_tenants(db: Db) -> list[sqlite3.Row]:
+    """Every tenant with a live, paired WhatsApp link, ACROSS ALL TENANTS.
+
+    Unscoped by design: the session supervisor is process-wide. Named so it is
+    obvious in review, like the scheduler's accessors.
+    """
+    return db.query(
+        "SELECT tenant_id, phone_jid, status FROM whatsapp_links "
+        "WHERE revoked_at IS NULL AND status = 'paired' ORDER BY tenant_id"
+    )

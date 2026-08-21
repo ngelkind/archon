@@ -202,6 +202,31 @@ class TelegramStatus(BaseModel):
     connected_at: str | None = None
 
 
+class WhatsAppConsent(BaseModel):
+    """The warning the app MUST show before offering to link."""
+
+    version: str
+    warning: str
+    risk: str
+    reversible: bool
+
+
+class WhatsAppLinkRequest(BaseModel):
+    # Deliberately not defaulted to True anywhere: the caller has to say it.
+    consent_acknowledged: bool = False
+    consent_version: str | None = None
+
+
+class WhatsAppStatus(BaseModel):
+    linked: bool
+    status: str
+    phone: str | None = None
+    consent_version: str | None = None
+    consent_acknowledged_at: str | None = None
+    paired_at: str | None = None
+    last_error: str | None = None
+
+
 class IntegrationLinkStart(BaseModel):
     authorize_url: str
     state: str

@@ -20,10 +20,12 @@ from fastapi.responses import HTMLResponse
 
 from ...integrations import google as google_integration
 from ...integrations import telegram as tg_integration
+from ...integrations import whatsapp as wa_integration
 from ..auth import require_device
 from ..schemas import (
     IntegrationLinkStart, IntegrationStatus, IntegrationStatusList,
     TelegramLinkStart, TelegramStatus, ToolCallResponse,
+    WhatsAppConsent, WhatsAppLinkRequest, WhatsAppStatus,
 )
 
 router = APIRouter(tags=["integrations"])
@@ -97,6 +99,58 @@ async def telegram_unlink(request: Request,
                           device: sqlite3.Row = Depends(require_device)):
     rt = request.app.state.rt
     revoked = tg_integration.unlink(rt, int(device["tenant_id"]))
+    return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
+
+
+@authed.get("/integrations/whatsapp/consent", response_model=WhatsAppConsent)
+async def whatsapp_consent(request: Request,
+                           device: sqlite3.Row = Depends(require_device)):
+    """The permanent-ban warning the app must display, and its version.
+
+    Served as its own endpoint so the app cannot render a paraphrase: it shows
+    this text, and echoes this version back when the user accepts.
+    """
+    return WhatsAppConsent(**wa_integration.consent_notice())
+
+
+@authed.post("/integrations/whatsapp/link", response_model=WhatsAppStatus)
+async def whatsapp_link(body: WhatsAppLinkRequest, request: Request,
+                        device: sqlite3.Row = Depends(require_device)):
+    """Start pairing. REFUSED (400) unless the ban warning was acknowledged."""
+    from ...db.tenancy import TenantScope
+
+    rt = request.app.state.rt
+    tenant_id = int(device["tenant_id"])
+    try:
+        wa_integration.start_link(
+            rt, tenant_id,
+            consent_acknowledged=body.consent_acknowledged,
+            consent_version=body.consent_version,
+        )
+    except wa_integration.ConsentRequired as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc)) from exc
+    except wa_integration.WhatsAppLinkError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=str(exc)) from exc
+    return WhatsAppStatus(**wa_integration.status(rt, TenantScope(rt.db, tenant_id)))
+
+
+@authed.get("/integrations/whatsapp", response_model=WhatsAppStatus)
+async def whatsapp_status(request: Request,
+                          device: sqlite3.Row = Depends(require_device)):
+    from ...db.tenancy import TenantScope
+
+    rt = request.app.state.rt
+    scope = TenantScope(rt.db, int(device["tenant_id"]))
+    return WhatsAppStatus(**wa_integration.status(rt, scope))
+
+
+@authed.delete("/integrations/whatsapp", response_model=ToolCallResponse)
+async def whatsapp_unlink(request: Request,
+                          device: sqlite3.Row = Depends(require_device)):
+    rt = request.app.state.rt
+    revoked = await wa_integration.unlink(rt, int(device["tenant_id"]))
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 
