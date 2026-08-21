@@ -32,7 +32,9 @@ _TIER_FOR_PURPOSE = {
 
 PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "anthropic": {"cheap": "claude-haiku-4-5", "strong": "claude-opus-5"},
-    "gemini": {"cheap": "gemini-3.6-flash", "strong": "gemini-3.1-pro"},
+    # strong is a flash, not a pro: gemini-3.1-pro 404s (only -preview names exist)
+    # and the pro models 429 on a free-tier key. Bump strong to a pro on a paid key.
+    "gemini": {"cheap": "gemini-3.6-flash", "strong": "gemini-3.7-flash"},
     "openai": {"cheap": "gpt-5-mini", "strong": "gpt-5"},
     # OpenRouter values are comma-separated in-request fallback chains.
     "openrouter": {
