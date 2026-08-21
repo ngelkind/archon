@@ -19,7 +19,7 @@ from archon.config import InsecureConfigError, Settings, check_production_secret
 from archon.db import repo
 from archon.db.tenancy import (
     GLOBAL_TABLES, OWNER_TENANT_ID, TENANTED_TABLES, TenantScope,
-    TenantScopeError, as_scope, owner_scope, tenant_purge,
+    PRE_AUTH_TABLES, TenantScopeError, as_scope, owner_scope, tenant_purge,
 )
 from archon.sessions import SessionRegistry
 from archon.tenant import owner_context, tenant_context
@@ -191,8 +191,11 @@ def test_tenanted_table_list_matches_the_schema(tmp_path):
         cols = {c["name"] for c in rt.db.query(f"PRAGMA table_info({row['name']})")}
         if "tenant_id" in cols:
             actual.add(row["name"])
-    assert actual == set(TENANTED_TABLES)
+    # oauth_states has a tenant_id but is a pre-auth handshake table, looked up
+    # by its own single-use random key before any tenant scope exists.
+    assert actual == set(TENANTED_TABLES) | set(PRE_AUTH_TABLES)
     assert not (TENANTED_TABLES & GLOBAL_TABLES)
+    assert not (TENANTED_TABLES & PRE_AUTH_TABLES)
 
 
 def test_forgetting_the_tenant_fails_loudly(tmp_path):
@@ -359,10 +362,17 @@ def test_multitenant_refuses_to_boot_with_placeholder_secrets():
             _settings(multitenant_enabled=True, api_token_pepper="",
                       jwt_secret="b" * 64)
         )
-    # both set -> boots
+    # the credential-encryption key is required too (it wraps every tenant's
+    # Google refresh token), and has no placeholder — unset must fail
+    with pytest.raises(InsecureConfigError, match="CREDENTIAL_ENCRYPTION_KEY"):
+        check_production_secrets(
+            _settings(multitenant_enabled=True, api_token_pepper="a" * 64,
+                      jwt_secret="b" * 64)
+        )
+    # all three set -> boots
     check_production_secrets(
         _settings(multitenant_enabled=True, api_token_pepper="a" * 64,
-                  jwt_secret="b" * 64)
+                  jwt_secret="b" * 64, credential_encryption_key="c" * 64)
     )
 
 
@@ -371,12 +381,13 @@ def test_audit_content_defaults_off_in_multitenant_mode():
     assert single.store_audit_content is True          # unchanged for the owner
 
     multi = _settings(multitenant_enabled=True, api_token_pepper="a" * 64,
-                      jwt_secret="b" * 64)
+                      jwt_secret="b" * 64, credential_encryption_key="c" * 64)
     assert multi.store_audit_content is False          # other people's messages
 
     # an operator can still opt in explicitly
     explicit = _settings(multitenant_enabled=True, api_token_pepper="a" * 64,
-                         jwt_secret="b" * 64, audit_store_content=True)
+                         jwt_secret="b" * 64, credential_encryption_key="c" * 64,
+                         audit_store_content=True)
     assert explicit.store_audit_content is True
 
 

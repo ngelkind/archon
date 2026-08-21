@@ -14,6 +14,9 @@ dependencies = [
     # Google (official) — googleapis.com / accounts.google.com only
     "google-api-python-client>=2.198",
     "google-auth-oauthlib>=1.4",
+    # AEAD for per-tenant integration credentials at rest (api/crypto.py).
+    # Present transitively via google-auth; declared because we depend on it directly.
+    "cryptography>=42.0",
     # LLM SDKs (official; the intended egress)
     "anthropic>=0.40",
     "openai>=1.55",

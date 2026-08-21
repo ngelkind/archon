@@ -83,6 +83,19 @@ class Settings(BaseSettings):
     # Unauthenticated endpoints (/auth/signup, /auth/login, /pair) get a much
     # tighter per-IP budget — these are the credential-guessing surfaces.
     rate_limit_auth_per_ip_per_min: int = 10
+    # Wraps every per-tenant integration credential at rest (see crypto.py).
+    # MUST be a generated 32-byte key in production (`openssl rand -hex 32`);
+    # the fail-closed check refuses to boot multitenant without it.
+    credential_encryption_key: str = ""
+
+    # --- Google OAuth (per-tenant Gmail + Calendar linking) ---
+    # From a Google Cloud project's OAuth client (Web application). The consent
+    # screen starts as an unverified test app (<=100 users), which is fine for
+    # beta; production verification + CASA is needed before general release.
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    # Must exactly match a redirect URI registered on that OAuth client.
+    google_oauth_redirect_uri: str = ""
 
     # --- Push (self-hosted ntfy / UnifiedPush; off by default) ---
     # Base URL of the ntfy instance, e.g. http://10.8.0.1:8080 — a tunnel-only
@@ -152,6 +165,9 @@ class Settings(BaseSettings):
 _REQUIRED_MULTITENANT_SECRETS = (
     ("API_TOKEN_PEPPER", "api_token_pepper", "dev-insecure-pepper-change-me"),
     ("JWT_SECRET", "jwt_secret", "dev-insecure-jwt-secret-change-me"),
+    # No placeholder: an unset value must fail too, because every tenant's
+    # Google refresh token is encrypted with it.
+    ("CREDENTIAL_ENCRYPTION_KEY", "credential_encryption_key", None),
 )
 
 

@@ -61,7 +61,7 @@ async def _send_or_confirm(ctx: ToolContext, chat_jid: str, text: str | None,
             chat_pk=row["id"] if row else None,
         )
         return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
-    result = await _send_executor(rt, payload)
+    result = await _send_executor(rt, payload, ctx.store)
     return json.dumps({"status": "sent", "detail": result})
 
 

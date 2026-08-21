@@ -49,9 +49,14 @@ def _to_inbound(msg: dict) -> InboundMessage:
 
 
 async def run(rt: Runtime) -> None:
-    from ..google_auth import GoogleAuth
+    from ...db.tenancy import OWNER_TENANT_ID
+    from ...integrations import google as google_integration
 
-    auth = GoogleAuth(rt.settings.google_token_path)
+    # Resolved through the per-tenant seam: the owner's file token unless they
+    # have linked a Google account through the OAuth flow. Polling every tenant
+    # is a loop over linked tenants on top of this same call — the next task,
+    # since it also needs per-tenant watermarks and gate decisions.
+    auth = google_integration.auth_for(rt, OWNER_TENANT_ID)
     client = GmailClient(auth)
     rt.clients["gmail"] = client
     rt.health["gmail"] = "polling"

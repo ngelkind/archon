@@ -175,6 +175,23 @@ class CostsResponse(BaseModel):
     breakdown: list[CostBreakdownRow]
 
 
+class IntegrationStatus(BaseModel):
+    provider: str
+    account_label: str | None
+    scopes: list[str] | None
+    linked_at: str | None
+    revoked_at: str | None
+
+
+class IntegrationStatusList(BaseModel):
+    integrations: list[IntegrationStatus]
+
+
+class IntegrationLinkStart(BaseModel):
+    authorize_url: str
+    state: str
+
+
 class Approval(BaseModel):
     id: int
     kind: str

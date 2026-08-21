@@ -43,12 +43,19 @@ TENANTED_TABLES = frozenset({
     "pending_replies", "llm_calls", "events_created", "sub_bots", "api_devices",
     # NULLABLE tenant_id: NULL marks a SYSTEM row (see 009_audit_tenant.sql).
     "audit",
+    "integration_credentials",
 })
 
 #: Intentionally global: identity, process bookkeeping, and the system log.
 GLOBAL_TABLES = frozenset({
     "schema_version", "users", "refresh_tokens", "api_pair_codes",
 })
+
+#: Carry a ``tenant_id`` column but are deliberately NOT tenant-scoped: they are
+#: read before a tenant scope exists, and the row IS the record of which tenant
+#: the in-flight handshake belongs to. Looked up only by their own random,
+#: single-use primary key.
+PRE_AUTH_TABLES = frozenset({"oauth_states"})
 
 _IDENT = re.compile(r"[a-z_][a-z0-9_]*")
 
@@ -109,6 +116,11 @@ def as_scope(store: Db | TenantScope) -> TenantScope:
     return TenantScope(store, OWNER_TENANT_ID)
 
 
+def tenant_id_of(store: Db | TenantScope) -> int:
+    """Which tenant a store acts for; the owner for a raw Db."""
+    return as_scope(store).tenant_id
+
+
 def owner_scope(db: Db) -> TenantScope:
     """Explicit scope for the single-user owner's data."""
     return TenantScope(db, OWNER_TENANT_ID)
@@ -125,7 +137,7 @@ _PURGE_ORDER = (
     "messages", "context_messages", "events_created", "scheduled_messages",
     "pending_replies", "pending_actions", "llm_calls", "api_devices",
     "sub_bots", "contacts", "settings", "gmail_state", "chats", "personas",
-    "audit",
+    "audit", "integration_credentials",
 )
 
 

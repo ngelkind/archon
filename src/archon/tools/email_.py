@@ -9,25 +9,24 @@ import json
 from typing import Any
 
 from ..db import repo
+from ..db.tenancy import tenant_id_of
 from ..pipeline import confirm
 from ..platforms.gmail.client import GmailClient, body_text, header, sender_address
 from ..runtime import Runtime
 from .registry import Registry, ToolContext
 
 
-def _client(rt: Runtime) -> GmailClient:
-    client = rt.clients.get("gmail")
-    if client is None:
-        from ..platforms.google_auth import GoogleAuth
+async def _client(rt: Runtime, tenant_id: int) -> GmailClient:
+    """The calling tenant's Gmail client (the owner's file token for tenant 1
+    until they link through the OAuth flow)."""
+    from ..integrations import google as google_integration
 
-        client = GmailClient(GoogleAuth(rt.settings.google_token_path))
-        rt.clients["gmail"] = client
-    return client  # type: ignore[return-value]
+    return await google_integration.client_for(rt, tenant_id, "gmail")
 
 
 async def _send_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     msg_id = await asyncio.to_thread(
-        _client(rt).send,
+        (await _client(rt, tenant_id_of(store))).send,
         to=payload["to"], subject=payload["subject"], body=payload["body"],
         attachment_path=payload.get("attachment_path"),
         thread_id=payload.get("thread_id"),
@@ -60,7 +59,7 @@ async def _send_or_confirm(ctx: ToolContext, payload: dict[str, Any]) -> str:
             chat_pk=ctx.origin_chat_pk,
         )
         return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
-    result = await _send_executor(ctx.rt, payload)
+    result = await _send_executor(ctx.rt, payload, ctx.store)
     return json.dumps({"status": "sent", "detail": result})
 
 
@@ -101,7 +100,8 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def email_reply(ctx: ToolContext, gmail_msg_id: str, body: str) -> str:
-        original = await asyncio.to_thread(_client(ctx.rt).get_message, gmail_msg_id)
+        client = await _client(ctx.rt, ctx.tenant_id)
+        original = await asyncio.to_thread(client.get_message, gmail_msg_id)
         to = sender_address(original)
         subject = header(original, "Subject")
         if subject and not subject.lower().startswith("re:"):
@@ -127,11 +127,12 @@ def register(registry: Registry) -> None:
         scopes=("owner",),
     )
     async def email_search(ctx: ToolContext, query: str, limit: int = 10) -> str:
-        stubs = await asyncio.to_thread(_client(ctx.rt).list_messages,
+        client = await _client(ctx.rt, ctx.tenant_id)
+        stubs = await asyncio.to_thread(client.list_messages,
                                         query=query, limit=min(int(limit), 25))
         out = []
         for stub in stubs:
-            msg = await asyncio.to_thread(_client(ctx.rt).get_message, stub["id"])
+            msg = await asyncio.to_thread(client.get_message, stub["id"])
             out.append({
                 "id": stub["id"],
                 "from": sender_address(msg),
@@ -152,7 +153,8 @@ def register(registry: Registry) -> None:
         scopes=("owner",),
     )
     async def email_read(ctx: ToolContext, gmail_msg_id: str) -> str:
-        msg = await asyncio.to_thread(_client(ctx.rt).get_message, gmail_msg_id)
+        client = await _client(ctx.rt, ctx.tenant_id)
+        msg = await asyncio.to_thread(client.get_message, gmail_msg_id)
         return json.dumps({
             "id": gmail_msg_id,
             "from": sender_address(msg),
@@ -172,5 +174,5 @@ def register(registry: Registry) -> None:
         },
     )
     async def email_mark_read(ctx: ToolContext, gmail_msg_id: str) -> str:
-        await asyncio.to_thread(_client(ctx.rt).mark_read, gmail_msg_id)
+        await asyncio.to_thread((await _client(ctx.rt, ctx.tenant_id)).mark_read, gmail_msg_id)
         return json.dumps({"ok": True})

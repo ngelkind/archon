@@ -910,3 +910,91 @@ def message_search(store: Store, where_tail: str, params: tuple = ()) -> list[sq
         f"SELECT * FROM messages WHERE tenant_id = ? AND {where_tail}",  # noqa: S608
         (sc.tenant_id, *params),
     )
+
+
+# --- per-tenant integration credentials --------------------------------------
+
+def integration_cred_upsert(store: Store, *, provider: str, secret_envelope: str,
+                            account_label: str | None = None,
+                            scopes: str | None = None) -> None:
+    """Store (or replace) this tenant's credential for a provider.
+
+    Re-linking clears ``revoked_at`` — consenting again is exactly how a user
+    recovers from a revoked or expired token.
+    """
+    sc = as_scope(store)
+    sc.execute(
+        "INSERT INTO integration_credentials (tenant_id, provider, account_label, "
+        "secret_envelope, scopes) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(tenant_id, provider) DO UPDATE SET "
+        "account_label = excluded.account_label, "
+        "secret_envelope = excluded.secret_envelope, scopes = excluded.scopes, "
+        "updated_at = datetime('now'), revoked_at = NULL",
+        (sc.tenant_id, provider, account_label, secret_envelope, scopes),
+    )
+
+
+def integration_cred_get(store: Store, provider: str) -> sqlite3.Row | None:
+    """This tenant's live credential for a provider, or None if absent/revoked."""
+    sc = as_scope(store)
+    return sc.query_one(
+        "SELECT * FROM integration_credentials "
+        "WHERE tenant_id = ? AND provider = ? AND revoked_at IS NULL",
+        (sc.tenant_id, provider),
+    )
+
+
+def integration_cred_list(store: Store) -> list[sqlite3.Row]:
+    """Link status per provider, without the secret."""
+    sc = as_scope(store)
+    return sc.query(
+        "SELECT provider, account_label, scopes, created_at, updated_at, revoked_at "
+        "FROM integration_credentials WHERE tenant_id = ? ORDER BY provider",
+        (sc.tenant_id,),
+    )
+
+
+def integration_cred_revoke(store: Store, provider: str) -> bool:
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE integration_credentials SET revoked_at = datetime('now') "
+        "WHERE tenant_id = ? AND provider = ? AND revoked_at IS NULL",
+        (sc.tenant_id, provider),
+    )
+    return cur.rowcount > 0
+
+
+# --- OAuth state (CSRF + which tenant a callback belongs to) -----------------
+
+def oauth_state_create(db: Db, *, state: str, tenant_id: int, provider: str,
+                       expires_at: str) -> None:
+    """Not tenant-scoped by the caller's scope on purpose: the row IS the record
+    of which tenant this flow belongs to, written before the redirect."""
+    db.execute(
+        "INSERT INTO oauth_states (state, tenant_id, provider, expires_at) "
+        "VALUES (?, ?, ?, ?)",
+        (state, tenant_id, provider, expires_at),
+    )
+
+
+def oauth_state_consume(db: Db, state: str, provider: str) -> sqlite3.Row | None:
+    """Atomically spend a state value; returns its row exactly once.
+
+    Single-use and time-bounded: a replayed callback, or one carrying a state
+    this server never issued, gets None — which is what stops an attacker
+    pasting their own authorization code into someone else's session.
+    """
+    now = _now()
+    cur = db.execute(
+        "UPDATE oauth_states SET used_at = ? "
+        "WHERE state = ? AND provider = ? AND used_at IS NULL AND expires_at >= ?",
+        (now, state, provider, now),
+    )
+    if cur.rowcount != 1:
+        return None
+    return db.query_one("SELECT * FROM oauth_states WHERE state = ?", (state,))
+
+
+def oauth_state_purge_expired(db: Db) -> int:
+    cur = db.execute("DELETE FROM oauth_states WHERE expires_at < ?", (_now(),))
+    return int(cur.rowcount)

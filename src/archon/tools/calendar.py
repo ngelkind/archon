@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from ..calendar_.client import CalendarClient
 from ..db import repo
+from ..db.tenancy import tenant_id_of
 from ..pipeline import confirm
 from ..runtime import Runtime
 from .registry import Registry, ToolContext
@@ -31,15 +32,12 @@ _EVENT_SCHEMA = {
 }
 
 
-def _client(rt: Runtime) -> CalendarClient:
-    client = rt.clients.get("calendar")
-    if client is None:
-        from ..platforms.google_auth import GoogleAuth
+async def _client(rt: Runtime, tenant_id: int) -> CalendarClient:
+    """The calling tenant's Calendar client (the owner's file token for tenant 1
+    until they link through the OAuth flow)."""
+    from ..integrations import google as google_integration
 
-        client = CalendarClient(GoogleAuth(rt.settings.google_token_path),
-                                rt.settings.timezone)
-        rt.clients["calendar"] = client
-    return client  # type: ignore[return-value]
+    return await google_integration.client_for(rt, tenant_id, "calendar")
 
 
 def _default_calendar(store) -> str:
@@ -47,7 +45,7 @@ def _default_calendar(store) -> str:
 
 
 async def _create_event_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
-    client = _client(rt)
+    client = await _client(rt, tenant_id_of(store))
     created = await asyncio.to_thread(
         client.create_event,
         calendar_id=payload.get("calendar_id") or _default_calendar(store),
@@ -109,7 +107,7 @@ def register(registry: Registry) -> None:
                 chat_pk=ctx.origin_chat_pk,
             )
             return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
-        result = await _create_event_executor(ctx.rt, payload)
+        result = await _create_event_executor(ctx.rt, payload, ctx.store)
         return json.dumps({"status": "created", "detail": result})
 
     @registry.tool(
@@ -126,7 +124,7 @@ def register(registry: Registry) -> None:
     async def calendar_list_events(ctx: ToolContext, period: str = "week") -> str:
         start, end = _range(period, ctx.rt.settings.timezone)
         events = await asyncio.to_thread(
-            _client(ctx.rt).list_events,
+            (await _client(ctx.rt, ctx.tenant_id)).list_events,
             calendar_id=_default_calendar(ctx.rt), time_min_iso=start, time_max_iso=end,
         )
         return json.dumps(events, ensure_ascii=False)
@@ -145,7 +143,7 @@ def register(registry: Registry) -> None:
         tz = ZoneInfo(ctx.rt.settings.timezone)
         now = datetime.now(tz)
         events = await asyncio.to_thread(
-            _client(ctx.rt).list_events,
+            (await _client(ctx.rt, ctx.tenant_id)).list_events,
             calendar_id=_default_calendar(ctx.rt),
             time_min_iso=(now - timedelta(days=30)).isoformat(),
             time_max_iso=(now + timedelta(days=90)).isoformat(),
@@ -172,7 +170,7 @@ def register(registry: Registry) -> None:
     )
     async def calendar_update_event(ctx: ToolContext, event_id: str, **patch: Any) -> str:
         result = await asyncio.to_thread(
-            _client(ctx.rt).update_event,
+            (await _client(ctx.rt, ctx.tenant_id)).update_event,
             calendar_id=_default_calendar(ctx.rt), event_id=event_id,
             patch={k: v for k, v in patch.items() if v},
         )
@@ -190,7 +188,7 @@ def register(registry: Registry) -> None:
     )
     async def calendar_delete_event(ctx: ToolContext, event_id: str) -> str:
         await asyncio.to_thread(
-            _client(ctx.rt).delete_event,
+            (await _client(ctx.rt, ctx.tenant_id)).delete_event,
             calendar_id=_default_calendar(ctx.rt), event_id=event_id,
         )
         repo.event_created_mark_cancelled(ctx.store, event_id)
@@ -219,7 +217,7 @@ def register(registry: Registry) -> None:
             return dt.astimezone(UTC).isoformat()
 
         busy = await asyncio.to_thread(
-            _client(ctx.rt).free_busy,
+            (await _client(ctx.rt, ctx.tenant_id)).free_busy,
             calendar_id=_default_calendar(ctx.rt),
             time_min_iso=_aware(start_iso), time_max_iso=_aware(end_iso),
         )
@@ -230,7 +228,7 @@ def register(registry: Registry) -> None:
         "List available Google calendars and which is the default.",
     )
     async def calendar_list_calendars(ctx: ToolContext) -> str:
-        cals = await asyncio.to_thread(_client(ctx.rt).list_calendars)
+        cals = await asyncio.to_thread((await _client(ctx.rt, ctx.tenant_id)).list_calendars)
         return json.dumps({"default": _default_calendar(ctx.rt), "calendars": cals},
                           ensure_ascii=False)
 

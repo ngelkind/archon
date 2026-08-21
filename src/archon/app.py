@@ -78,6 +78,10 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     contacts_tools.register(registry)
     rt.registry = registry
     rt.owner_text_handler = partial(handle_owner_text, rt)
+    # Teach the session registry how to build a tenant's Google clients.
+    from .integrations import google as google_integration
+
+    google_integration.register(rt)
 
 
 def _set_health(rt: Runtime, name: str, state: str) -> None:
