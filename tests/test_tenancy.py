@@ -421,3 +421,37 @@ def test_rate_limiter_is_off_for_the_single_user_tunnel(tmp_path):
             raise AssertionError("middleware must not be installed in single-user mode")
 
     install(_App(), rt.settings)
+
+
+def test_purge_covers_every_table_with_a_tenant_fk(tmp_path):
+    """Regression guard: a tenant who merely STARTED a link flow must still be
+    deletable. Any table with a tenant_id FK has to be in the purge order, or
+    account deletion fails on a foreign-key constraint at the users row."""
+    rt = make_rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+
+    with_fk = set()
+    for row in rt.db.query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ):
+        table = row["name"]
+        cols = {c["name"] for c in rt.db.query(f"PRAGMA table_info({table})")}
+        if "tenant_id" in cols:
+            with_fk.add(table)
+    from archon.db.tenancy import _PURGE_ORDER
+
+    assert with_fk - set(_PURGE_ORDER) == set(), (
+        f"tables with a tenant_id FK missing from the purge: "
+        f"{sorted(with_fk - set(_PURGE_ORDER))}"
+    )
+
+    # and it really deletes: seed a row in each, then purge
+    from archon.api.security import hash_secret
+
+    repo.oauth_state_create(rt.db, state="s1", tenant_id=b_id, provider="google",
+                            expires_at="2099-01-01 00:00:00")
+    repo.telegram_link_code_create(
+        rt.db, code_hash=hash_secret(rt.settings.api_token_pepper, "ABCD1234"),
+        tenant_id=b_id, expires_at="2099-01-01 00:00:00")
+    tenant_purge(rt.db, b_id)
+    assert rt.db.query_one("SELECT 1 FROM users WHERE id = ?", (b_id,)) is None

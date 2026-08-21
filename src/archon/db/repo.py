@@ -1015,3 +1015,130 @@ def integration_linked_tenants(db: Db, provider: str) -> list[int]:
             (provider,),
         )
     ]
+
+
+# --- telegram links (per-tenant Business connection) -------------------------
+
+def telegram_link_upsert(store: Store, *, tg_user_id: str,
+                         tg_username: str | None = None,
+                         tg_name: str | None = None) -> int:
+    """Bind a Telegram identity to this tenant, replacing any previous one.
+
+    Re-linking a different Telegram account revokes the old row rather than
+    editing it, so the audit trail keeps who was connected when.
+    """
+    sc = as_scope(store)
+    sc.execute(
+        "UPDATE telegram_links SET revoked_at = ? "
+        "WHERE tenant_id = ? AND revoked_at IS NULL AND tg_user_id <> ?",
+        (_now(), sc.tenant_id, tg_user_id),
+    )
+    existing = sc.query_one(
+        "SELECT id FROM telegram_links "
+        "WHERE tenant_id = ? AND tg_user_id = ? AND revoked_at IS NULL",
+        (sc.tenant_id, tg_user_id),
+    )
+    if existing is not None:
+        sc.execute(
+            "UPDATE telegram_links SET tg_username = ?, tg_name = ? "
+            "WHERE id = ? AND tenant_id = ?",
+            (tg_username, tg_name, existing["id"], sc.tenant_id),
+        )
+        return int(existing["id"])
+    cur = sc.execute(
+        "INSERT INTO telegram_links (tenant_id, tg_user_id, tg_username, tg_name) "
+        "VALUES (?, ?, ?, ?)",
+        (sc.tenant_id, tg_user_id, tg_username, tg_name),
+    )
+    return int(cur.lastrowid)
+
+
+def telegram_link_get(store: Store) -> sqlite3.Row | None:
+    """This tenant's live Telegram link, if any."""
+    sc = as_scope(store)
+    return sc.query_one(
+        "SELECT * FROM telegram_links WHERE tenant_id = ? AND revoked_at IS NULL",
+        (sc.tenant_id,),
+    )
+
+
+def telegram_link_revoke(store: Store) -> bool:
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE telegram_links SET revoked_at = ?, is_enabled = 0 "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (_now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def telegram_link_set_connection(store: Store, *, business_connection_id: str | None,
+                                 enabled: bool) -> bool:
+    """Record the Business connection Telegram just issued for this tenant."""
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE telegram_links SET business_connection_id = ?, is_enabled = ?, "
+        "connected_at = ? WHERE tenant_id = ? AND revoked_at IS NULL",
+        (business_connection_id, int(enabled), _now() if enabled else None,
+         sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+# The next two are the ROUTING lookups: they answer "whose message is this?"
+# before any tenant scope exists, so they are deliberately unscoped — exactly
+# like api_device_by_token_hash. Both keys are issued by Telegram, not by a
+# caller, and each resolves to at most one live tenant.
+
+def telegram_tenant_by_connection(db: Db, business_connection_id: str) -> int | None:
+    row = db.query_one(
+        "SELECT tenant_id FROM telegram_links "
+        "WHERE business_connection_id = ? AND revoked_at IS NULL",
+        (business_connection_id,),
+    )
+    return int(row["tenant_id"]) if row else None
+
+
+def telegram_tenant_by_user_id(db: Db, tg_user_id: str) -> int | None:
+    row = db.query_one(
+        "SELECT tenant_id FROM telegram_links "
+        "WHERE tg_user_id = ? AND revoked_at IS NULL",
+        (str(tg_user_id),),
+    )
+    return int(row["tenant_id"]) if row else None
+
+
+def telegram_links_all_tenants(db: Db) -> list[sqlite3.Row]:
+    """Every live link, ACROSS ALL TENANTS — for admin/status views only."""
+    return db.query(
+        "SELECT * FROM telegram_links WHERE revoked_at IS NULL ORDER BY tenant_id"
+    )
+
+
+def telegram_link_code_create(db: Db, *, code_hash: str, tenant_id: int,
+                              expires_at: str) -> None:
+    """Issued by the app, redeemed in the bot. Unscoped for the same reason as
+    oauth_states: the row records which tenant the in-flight handshake is for."""
+    db.execute(
+        "INSERT INTO telegram_link_codes (code_hash, tenant_id, expires_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(code_hash) DO UPDATE SET "
+        "tenant_id = excluded.tenant_id, expires_at = excluded.expires_at, "
+        "used_at = NULL",
+        (code_hash, tenant_id, expires_at),
+    )
+
+
+def telegram_link_code_consume(db: Db, code_hash: str) -> int | None:
+    """Spend a link code once; returns its tenant, or None if unknown/used/expired."""
+    now = _now()
+    cur = db.execute(
+        "UPDATE telegram_link_codes SET used_at = ? "
+        "WHERE code_hash = ? AND used_at IS NULL AND expires_at >= ?",
+        (now, code_hash, now),
+    )
+    if cur.rowcount != 1:
+        return None
+    row = db.query_one(
+        "SELECT tenant_id FROM telegram_link_codes WHERE code_hash = ?", (code_hash,)
+    )
+    return int(row["tenant_id"]) if row else None

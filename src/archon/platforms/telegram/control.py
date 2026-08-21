@@ -192,6 +192,12 @@ async def run(rt: Runtime) -> None:
     bot, dp = build(rt)
     confirm.register_handlers(dp, rt)
     business.register(dp, rt)
+    if rt.settings.multitenant_enabled:
+        # Product front door: /start linking and DMs from linked users. Only in
+        # product mode, so the single-user dispatcher is byte-for-byte as before.
+        from . import product
+
+        product.register(dp, rt)
     rt.clients["control_bot"] = bot
     # A SEPARATE bot instance (same token) dedicated to out-of-band sends
     # (log-channel cards, capture, owner alerts). The polling bot closes its

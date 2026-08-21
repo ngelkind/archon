@@ -187,6 +187,21 @@ class IntegrationStatusList(BaseModel):
     integrations: list[IntegrationStatus]
 
 
+class TelegramLinkStart(BaseModel):
+    code: str
+    deep_link: str | None
+    expires_in_minutes: int
+
+
+class TelegramStatus(BaseModel):
+    linked: bool
+    connected: bool
+    tg_username: str | None = None
+    tg_name: str | None = None
+    linked_at: str | None = None
+    connected_at: str | None = None
+
+
 class IntegrationLinkStart(BaseModel):
     authorize_url: str
     state: str

@@ -15,6 +15,18 @@ from ..runtime import Runtime
 from .registry import Registry, ToolContext
 
 
+def _business_connection_id(store) -> str | None:
+    """The Business connection to send as, for whichever tenant this store is.
+
+    A product tenant's lives on their telegram_links row; the single-user
+    owner's is the legacy setting, which is still authoritative for them.
+    """
+    from ..integrations import telegram as tg_integration
+
+    return (tg_integration.connection_id_for(store)
+            or repo.setting_get(store, "tg.business_connection_id", None))
+
+
 async def _send_private_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     ref = str(payload["chat_id"])
     chat_name = payload.get("chat_name")
@@ -29,7 +41,7 @@ async def _send_private_executor(rt: Runtime, payload: dict[str, Any], store) ->
         source = "userbot"
     else:
         bot = rt.clients.get("control_bot")
-        conn_id = repo.setting_get(store, "tg.business_connection_id", None)
+        conn_id = _business_connection_id(store)
         if bot is None or not conn_id:
             raise RuntimeError("cannot send: Telegram userbot is down and there is "
                                "no Business connection")
@@ -95,7 +107,7 @@ async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> 
         )
         return json.dumps({"status": "pending_owner_confirmation", "action_id": action_id})
     executor = _send_private_executor if kind == "tg.send_private" else _send_group_executor
-    result = await executor(rt, payload)
+    result = await executor(rt, payload, ctx.store)
     return json.dumps({"status": "sent", "detail": result})
 
 

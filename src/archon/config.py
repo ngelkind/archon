@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     # Must exactly match a redirect URI registered on that OAuth client.
     google_oauth_redirect_uri: str = ""
 
+    # --- Telegram product bot (per-tenant Business linking) ---
+    # The @username of the bot users connect as their Business chatbot. Only
+    # needed to build t.me deep links; the token is telegram_bot_token.
+    telegram_bot_username: str = ""
+
     # --- Push (self-hosted ntfy / UnifiedPush; off by default) ---
     # Base URL of the ntfy instance, e.g. http://10.8.0.1:8080 — a tunnel-only
     # address; the broker should never be publicly reachable. Empty = push

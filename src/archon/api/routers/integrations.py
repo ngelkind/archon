@@ -19,9 +19,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
 from ...integrations import google as google_integration
+from ...integrations import telegram as tg_integration
 from ..auth import require_device
 from ..schemas import (
-    IntegrationLinkStart, IntegrationStatus, IntegrationStatusList, ToolCallResponse,
+    IntegrationLinkStart, IntegrationStatus, IntegrationStatusList,
+    TelegramLinkStart, TelegramStatus, ToolCallResponse,
 )
 
 router = APIRouter(tags=["integrations"])
@@ -65,6 +67,36 @@ async def google_unlink(request: Request,
                         device: sqlite3.Row = Depends(require_device)):
     rt = request.app.state.rt
     revoked = await google_integration.unlink(rt, int(device["tenant_id"]))
+    return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
+
+
+@authed.post("/integrations/telegram/link", response_model=TelegramLinkStart)
+async def telegram_link(request: Request,
+                        device: sqlite3.Row = Depends(require_device)):
+    """Issue a single-use code the user sends to the product bot.
+
+    Redeeming it in Telegram is what proves they hold that account — which is
+    the only way to know which tenant a later Business connection belongs to.
+    """
+    rt = request.app.state.rt
+    return TelegramLinkStart(**tg_integration.start_link(rt, int(device["tenant_id"])))
+
+
+@authed.get("/integrations/telegram", response_model=TelegramStatus)
+async def telegram_status(request: Request,
+                          device: sqlite3.Row = Depends(require_device)):
+    from ...db.tenancy import TenantScope
+
+    rt = request.app.state.rt
+    scope = TenantScope(rt.db, int(device["tenant_id"]))
+    return TelegramStatus(**tg_integration.status(scope))
+
+
+@authed.delete("/integrations/telegram", response_model=ToolCallResponse)
+async def telegram_unlink(request: Request,
+                          device: sqlite3.Row = Depends(require_device)):
+    rt = request.app.state.rt
+    revoked = tg_integration.unlink(rt, int(device["tenant_id"]))
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 
