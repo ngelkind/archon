@@ -125,7 +125,7 @@ def register(registry: Registry) -> None:
         start, end = _range(period, ctx.rt.settings.timezone)
         events = await asyncio.to_thread(
             (await _client(ctx.rt, ctx.tenant_id)).list_events,
-            calendar_id=_default_calendar(ctx.rt), time_min_iso=start, time_max_iso=end,
+            calendar_id=_default_calendar(ctx.store), time_min_iso=start, time_max_iso=end,
         )
         return json.dumps(events, ensure_ascii=False)
 
@@ -144,7 +144,7 @@ def register(registry: Registry) -> None:
         now = datetime.now(tz)
         events = await asyncio.to_thread(
             (await _client(ctx.rt, ctx.tenant_id)).list_events,
-            calendar_id=_default_calendar(ctx.rt),
+            calendar_id=_default_calendar(ctx.store),
             time_min_iso=(now - timedelta(days=30)).isoformat(),
             time_max_iso=(now + timedelta(days=90)).isoformat(),
             query=query,
@@ -171,7 +171,7 @@ def register(registry: Registry) -> None:
     async def calendar_update_event(ctx: ToolContext, event_id: str, **patch: Any) -> str:
         result = await asyncio.to_thread(
             (await _client(ctx.rt, ctx.tenant_id)).update_event,
-            calendar_id=_default_calendar(ctx.rt), event_id=event_id,
+            calendar_id=_default_calendar(ctx.store), event_id=event_id,
             patch={k: v for k, v in patch.items() if v},
         )
         return json.dumps({"status": "updated", **result})
@@ -189,7 +189,7 @@ def register(registry: Registry) -> None:
     async def calendar_delete_event(ctx: ToolContext, event_id: str) -> str:
         await asyncio.to_thread(
             (await _client(ctx.rt, ctx.tenant_id)).delete_event,
-            calendar_id=_default_calendar(ctx.rt), event_id=event_id,
+            calendar_id=_default_calendar(ctx.store), event_id=event_id,
         )
         repo.event_created_mark_cancelled(ctx.store, event_id)
         return json.dumps({"status": "deleted", "event_id": event_id})
@@ -218,7 +218,7 @@ def register(registry: Registry) -> None:
 
         busy = await asyncio.to_thread(
             (await _client(ctx.rt, ctx.tenant_id)).free_busy,
-            calendar_id=_default_calendar(ctx.rt),
+            calendar_id=_default_calendar(ctx.store),
             time_min_iso=_aware(start_iso), time_max_iso=_aware(end_iso),
         )
         return json.dumps({"busy": busy, "free": not busy})
@@ -229,7 +229,7 @@ def register(registry: Registry) -> None:
     )
     async def calendar_list_calendars(ctx: ToolContext) -> str:
         cals = await asyncio.to_thread((await _client(ctx.rt, ctx.tenant_id)).list_calendars)
-        return json.dumps({"default": _default_calendar(ctx.rt), "calendars": cals},
+        return json.dumps({"default": _default_calendar(ctx.store), "calendars": cals},
                           ensure_ascii=False)
 
     @registry.tool(
