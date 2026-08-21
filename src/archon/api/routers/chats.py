@@ -14,11 +14,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from ...db import repo
-from ..auth import require_device
-from ..ctx import api_owner_ctx
+from ...db.tenancy import TenantScope
+from ..auth import require_tenant
+from ..ctx import tenant_ctx
 from ..schemas import Chat, ChatPatch, ChatPatchResponse, Message
 
-router = APIRouter(dependencies=[Depends(require_device)], tags=["chats"])
+router = APIRouter(dependencies=[Depends(require_tenant)], tags=["chats"])
 
 
 def _chat_dto(row: sqlite3.Row) -> Chat:
@@ -45,8 +46,8 @@ def _chat_dto(row: sqlite3.Row) -> Chat:
     )
 
 
-def _get_chat_or_404(rt, pk: int) -> sqlite3.Row:
-    row = repo.chat_get_by_pk(rt.db, pk)
+def _get_chat_or_404(rt, pk: int, tenant_id: int) -> sqlite3.Row:
+    row = repo.chat_get_by_pk(TenantScope(rt.db, tenant_id), pk)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown chat")
     return row
@@ -57,15 +58,18 @@ async def list_chats(
     request: Request,
     platform: str | None = Query(default=None, pattern="^(wa|tg|gmail)$"),
     whitelisted_only: bool = False,
+    tenant_id: int = Depends(require_tenant),
 ) -> list[Chat]:
-    rows = repo.chat_list(request.app.state.rt.db, platform=platform,
+    rt = request.app.state.rt
+    rows = repo.chat_list(TenantScope(rt.db, tenant_id), platform=platform,
                           whitelisted_only=whitelisted_only)
     return [_chat_dto(r) for r in rows]
 
 
 @router.get("/chats/{pk}", response_model=Chat)
-async def get_chat(pk: int, request: Request) -> Chat:
-    return _chat_dto(_get_chat_or_404(request.app.state.rt, pk))
+async def get_chat(pk: int, request: Request,
+                   tenant_id: int = Depends(require_tenant)) -> Chat:
+    return _chat_dto(_get_chat_or_404(request.app.state.rt, pk, tenant_id))
 
 
 def _planned_calls(patch: ChatPatch, platform: str, chat_id: str) -> list[tuple[str, str, dict]]:
@@ -104,26 +108,29 @@ def _planned_calls(patch: ChatPatch, platform: str, chat_id: str) -> list[tuple[
 
 
 @router.patch("/chats/{pk}", response_model=ChatPatchResponse)
-async def patch_chat(pk: int, patch: ChatPatch, request: Request) -> ChatPatchResponse:
+async def patch_chat(pk: int, patch: ChatPatch, request: Request,
+                     tenant_id: int = Depends(require_tenant)) -> ChatPatchResponse:
     rt = request.app.state.rt
-    row = _get_chat_or_404(rt, pk)
+    row = _get_chat_or_404(rt, pk, tenant_id)
     calls = _planned_calls(patch, row["platform"], row["chat_id"])
     if not calls:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="no fields to update")
-    ctx = api_owner_ctx(rt)
+    ctx = tenant_ctx(rt, tenant_id)
     applied: dict[str, str] = {}
     for field, tool, args in calls:
         applied[field] = await rt.registry.dispatch(ctx, tool, args)
-    return ChatPatchResponse(chat=_chat_dto(_get_chat_or_404(rt, pk)), applied=applied)
+    return ChatPatchResponse(chat=_chat_dto(_get_chat_or_404(rt, pk, tenant_id)),
+                             applied=applied)
 
 
 @router.get("/chats/{pk}/messages", response_model=list[Message])
 async def chat_messages(
-    pk: int, request: Request, limit: int = Query(default=50, ge=1, le=500)
+    pk: int, request: Request, limit: int = Query(default=50, ge=1, le=500),
+    tenant_id: int = Depends(require_tenant),
 ) -> list[Message]:
     rt = request.app.state.rt
-    _get_chat_or_404(rt, pk)
+    _get_chat_or_404(rt, pk, tenant_id)
     return [
         Message(
             id=int(r["id"]), msg_id=r["msg_id"], sender_id=r["sender_id"],
@@ -132,5 +139,5 @@ async def chat_messages(
             edited_text=r["edited_text"], edited_at=r["edited_at"],
             deleted_at=r["deleted_at"],
         )
-        for r in repo.message_history(rt.db, pk, limit=limit)
+        for r in repo.message_history(TenantScope(rt.db, tenant_id), pk, limit=limit)
     ]

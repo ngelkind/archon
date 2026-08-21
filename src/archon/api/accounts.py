@@ -121,15 +121,17 @@ def _rt(request: Request) -> Runtime:
     return request.app.state.rt
 
 
-# SCOPE WARNING: this authenticates an ACCOUNT; it does not scope DATA.
-# Every other router (agent, tools, chats, config, contacts, schedules, costs,
-# approvals, status, stream) reads single-owner tables that have no tenant_id,
-# and ToolContext(scope="owner") grants the one owner's full authority — see
-# api/ctx.py:17,20, agent/owner.py:39-41, pipeline/confirm.py:80,170. Attaching
-# Depends(require_user) to any of them would serve the owner's WhatsApp/Gmail
-# data to any signed-up account. Tenant-scope the data model FIRST.
-# Today only /auth/me and /auth/logout use this, which is what keeps the
-# multitenant_enabled flag inert; keep it that way until tenancy lands.
+# Authenticates an ACCOUNT and returns its user id, for the /auth/* endpoints
+# that are about the account itself (/auth/me, /auth/logout).
+#
+# HISTORY, because the old note here said the opposite: this used to carry a
+# warning not to attach it to any data route, because the routers were
+# single-owner. Tenancy has since landed (db/008_tenancy.sql) AND the feature
+# routers were migrated off the owner. Feature routes now use
+# `api/auth.py:require_tenant`, which accepts EITHER a JWT or a device token and
+# returns the tenant — because tenant_id IS users.id, a JWT's subject is its
+# tenant. Do not reintroduce require_user on a feature route: it yields a user
+# id with no tenant scoping attached, which is how the leak would come back.
 async def require_user(
     request: Request,
     authorization: str | None = Header(default=None),

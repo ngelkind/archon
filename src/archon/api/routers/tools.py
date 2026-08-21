@@ -12,15 +12,16 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from ...tools.registry import Registry
-from ..auth import require_device
-from ..ctx import api_owner_ctx
+from ..auth import require_tenant
+from ..ctx import tenant_ctx
 from ..schemas import ToolCallRequest, ToolCallResponse, ToolInfo, ToolListResponse
 
-router = APIRouter(dependencies=[Depends(require_device)], tags=["tools"])
+router = APIRouter(dependencies=[Depends(require_tenant)], tags=["tools"])
 
 
 @router.get("/tools", response_model=ToolListResponse)
-async def list_tools(request: Request) -> ToolListResponse:
+async def list_tools(request: Request,
+                     tenant_id: int = Depends(require_tenant)) -> ToolListResponse:
     registry: Registry = request.app.state.rt.registry
     infos: list[ToolInfo] = []
     for spec in registry.specs_for("owner"):
@@ -35,7 +36,10 @@ async def list_tools(request: Request) -> ToolListResponse:
 
 
 @router.post("/tools/{name}", response_model=ToolCallResponse)
-async def call_tool(name: str, body: ToolCallRequest, request: Request) -> ToolCallResponse:
+async def call_tool(name: str, body: ToolCallRequest, request: Request,
+                    tenant_id: int = Depends(require_tenant)) -> ToolCallResponse:
     rt = request.app.state.rt
-    result = await rt.registry.dispatch(api_owner_ctx(rt), name, body.args)
+    # The CALLING tenant's context: a product user dispatching a tool must act
+    # on their own data, never the owner's.
+    result = await rt.registry.dispatch(tenant_ctx(rt, tenant_id), name, body.args)
     return ToolCallResponse(result=result)

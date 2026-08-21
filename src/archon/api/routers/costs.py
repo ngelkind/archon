@@ -5,19 +5,21 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 
 from ...db import repo
-from ..auth import require_device
+from ...db.tenancy import TenantScope
+from ..auth import require_tenant
 from ..schemas import CostBreakdownRow, CostsResponse, CostWindow
 
-router = APIRouter(dependencies=[Depends(require_device)], tags=["costs"])
+router = APIRouter(dependencies=[Depends(require_tenant)], tags=["costs"])
 
 _WINDOWS = {"day": "-1 day", "week": "-7 days", "month": "-30 days"}
 
 
 @router.get("/costs", response_model=CostsResponse)
 async def costs(
-    request: Request, window: str = Query(default="day", pattern="^(day|week|month)$")
+    request: Request, window: str = Query(default="day", pattern="^(day|week|month)$"),
+    tenant_id: int = Depends(require_tenant),
 ) -> CostsResponse:
-    db = request.app.state.rt.db
+    db = TenantScope(request.app.state.rt.db, tenant_id)
     expr = _WINDOWS[window]
     total = repo.llm_cost_since(db, expr)
     return CostsResponse(

@@ -15,11 +15,12 @@ import sqlite3
 from fastapi import APIRouter, Depends, Request
 
 from ...db import repo
+from ...db.tenancy import TenantScope
 from ...pipeline import confirm
-from ..auth import require_device
+from ..auth import require_tenant
 from ..schemas import Approval, ApprovalDecision, ApprovalDecisionResponse
 
-router = APIRouter(dependencies=[Depends(require_device)], tags=["approvals"])
+router = APIRouter(dependencies=[Depends(require_tenant)], tags=["approvals"])
 
 
 def _approval_dto(row: sqlite3.Row) -> Approval:
@@ -35,19 +36,25 @@ def _approval_dto(row: sqlite3.Row) -> Approval:
 
 
 @router.get("/approvals", response_model=list[Approval])
-async def list_approvals(request: Request, status: str = "pending") -> list[Approval]:
-    rows = repo.pending_action_list(request.app.state.rt.db, status=status)
+async def list_approvals(request: Request, status: str = "pending",
+                         tenant_id: int = Depends(require_tenant)) -> list[Approval]:
+    rows = repo.pending_action_list(
+        TenantScope(request.app.state.rt.db, tenant_id), status=status)
     return [_approval_dto(r) for r in rows]
 
 
 @router.post("/approvals/{action_id}/decision", response_model=ApprovalDecisionResponse)
 async def decide(
     action_id: int, body: ApprovalDecision, request: Request,
-    device: sqlite3.Row = Depends(require_device),
+    tenant_id: int = Depends(require_tenant),
 ) -> ApprovalDecisionResponse:
+    from ...tenant import tenant_context
+
     rt = request.app.state.rt
+    # Scoped: one tenant can never resolve another tenant's pending action.
     outcome = await confirm.resolve_action(
-        rt, action_id, "ok" if body.ok else "no", actor=f"api:device:{device['id']}"
+        rt, action_id, "ok" if body.ok else "no",
+        actor=f"api:tenant:{tenant_id}", tenant=tenant_context(rt, tenant_id),
     )
     return ApprovalDecisionResponse(
         status=outcome.status, detail=outcome.detail, ok=outcome.ok

@@ -13,22 +13,24 @@ import json
 from fastapi import APIRouter, Depends, Query, Request
 
 from ...db import repo
-from ..auth import require_device
-from ..ctx import api_owner_ctx
+from ...db.tenancy import TenantScope
+from ..auth import require_tenant
+from ..ctx import tenant_ctx
 from ..schemas import (
     Contact, ContactsResponse, ContactSyncRequest, ContactSyncResponse,
 )
 
-router = APIRouter(dependencies=[Depends(require_device)], tags=["contacts"])
+router = APIRouter(dependencies=[Depends(require_tenant)], tags=["contacts"])
 
 _MAX_SYNC = 1000
 
 
 @router.get("/contacts", response_model=ContactsResponse)
 async def list_contacts(
-    request: Request, limit: int = Query(default=500, ge=1, le=2000)
+    request: Request, limit: int = Query(default=500, ge=1, le=2000),
+    tenant_id: int = Depends(require_tenant),
 ) -> ContactsResponse:
-    db = request.app.state.rt.db
+    db = TenantScope(request.app.state.rt.db, tenant_id)
     counts = repo.contact_counts(db)
     return ContactsResponse(
         contacts=[
@@ -41,9 +43,11 @@ async def list_contacts(
 
 
 @router.post("/contacts/sync", response_model=ContactSyncResponse)
-async def sync_contacts(body: ContactSyncRequest, request: Request) -> ContactSyncResponse:
+async def sync_contacts(body: ContactSyncRequest, request: Request,
+                        tenant_id: int = Depends(require_tenant)
+                        ) -> ContactSyncResponse:
     rt = request.app.state.rt
-    ctx = api_owner_ctx(rt)
+    ctx = tenant_ctx(rt, tenant_id)
     stored = skipped = 0
     for entry in body.contacts[:_MAX_SYNC]:
         if not entry.name.strip() or not entry.phone.strip():

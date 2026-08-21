@@ -13,8 +13,6 @@ belongs to from something the server minted, not from anything the caller says.
 
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
@@ -22,7 +20,7 @@ from ...integrations import google as google_integration
 from ...integrations import telegram as tg_integration
 from ...integrations import telegram_userbot as tg_userbot
 from ...integrations import whatsapp as wa_integration
-from ..auth import require_device
+from ..auth import require_tenant
 from ..schemas import (
     IntegrationLinkStart, IntegrationStatus, IntegrationStatusList,
     TelegramLinkStart, TelegramStatus, ToolCallResponse,
@@ -33,17 +31,17 @@ from ..schemas import (
 
 router = APIRouter(tags=["integrations"])
 
-authed = APIRouter(dependencies=[Depends(require_device)], tags=["integrations"])
+authed = APIRouter(dependencies=[Depends(require_tenant)], tags=["integrations"])
 
 
 @authed.get("/integrations", response_model=IntegrationStatusList)
 async def list_integrations(request: Request,
-                            device: sqlite3.Row = Depends(require_device)):
+                            tenant_id: int = Depends(require_tenant)):
     from ...db import repo
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    scope = TenantScope(rt.db, int(device["tenant_id"]))
+    scope = TenantScope(rt.db, tenant_id)
     return IntegrationStatusList(integrations=[
         IntegrationStatus(
             provider=r["provider"], account_label=r["account_label"],
@@ -56,11 +54,11 @@ async def list_integrations(request: Request,
 
 @authed.post("/integrations/google/authorize", response_model=IntegrationLinkStart)
 async def google_authorize(request: Request,
-                           device: sqlite3.Row = Depends(require_device)):
+                           tenant_id: int = Depends(require_tenant)):
     """Consent URL for the calling tenant. The app opens this in a browser."""
     rt = request.app.state.rt
     try:
-        url, state = google_integration.authorize_url(rt, int(device["tenant_id"]))
+        url, state = google_integration.authorize_url(rt, tenant_id)
     except google_integration.GoogleLinkError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail=str(exc)) from exc
@@ -69,46 +67,46 @@ async def google_authorize(request: Request,
 
 @authed.delete("/integrations/google", response_model=ToolCallResponse)
 async def google_unlink(request: Request,
-                        device: sqlite3.Row = Depends(require_device)):
+                        tenant_id: int = Depends(require_tenant)):
     rt = request.app.state.rt
-    revoked = await google_integration.unlink(rt, int(device["tenant_id"]))
+    revoked = await google_integration.unlink(rt, tenant_id)
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 
 @authed.post("/integrations/telegram/link", response_model=TelegramLinkStart)
 async def telegram_link(request: Request,
-                        device: sqlite3.Row = Depends(require_device)):
+                        tenant_id: int = Depends(require_tenant)):
     """Issue a single-use code the user sends to the product bot.
 
     Redeeming it in Telegram is what proves they hold that account — which is
     the only way to know which tenant a later Business connection belongs to.
     """
     rt = request.app.state.rt
-    return TelegramLinkStart(**tg_integration.start_link(rt, int(device["tenant_id"])))
+    return TelegramLinkStart(**tg_integration.start_link(rt, tenant_id))
 
 
 @authed.get("/integrations/telegram", response_model=TelegramStatus)
 async def telegram_status(request: Request,
-                          device: sqlite3.Row = Depends(require_device)):
+                          tenant_id: int = Depends(require_tenant)):
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    scope = TenantScope(rt.db, int(device["tenant_id"]))
+    scope = TenantScope(rt.db, tenant_id)
     return TelegramStatus(**tg_integration.status(scope))
 
 
 @authed.delete("/integrations/telegram", response_model=ToolCallResponse)
 async def telegram_unlink(request: Request,
-                          device: sqlite3.Row = Depends(require_device)):
+                          tenant_id: int = Depends(require_tenant)):
     rt = request.app.state.rt
-    revoked = tg_integration.unlink(rt, int(device["tenant_id"]))
+    revoked = tg_integration.unlink(rt, tenant_id)
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 
 @authed.get("/integrations/telegram/userbot/consent",
             response_model=TelegramUserbotConsent)
 async def telegram_userbot_consent(request: Request,
-                                   device: sqlite3.Row = Depends(require_device)):
+                                   tenant_id: int = Depends(require_tenant)):
     """The ban warning the app must display, verbatim, before offering to link."""
     return TelegramUserbotConsent(**tg_userbot.consent_notice())
 
@@ -116,12 +114,12 @@ async def telegram_userbot_consent(request: Request,
 @authed.post("/integrations/telegram/userbot/start",
              response_model=TelegramUserbotStatus)
 async def telegram_userbot_start(body: TelegramUserbotStart, request: Request,
-                                 device: sqlite3.Row = Depends(require_device)):
+                                 tenant_id: int = Depends(require_tenant)):
     """Send the login code. REFUSED (400) unless the risk was acknowledged."""
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    tenant_id = int(device["tenant_id"])
+    tenant_id = tenant_id
     try:
         await tg_userbot.start_login(
             rt, tenant_id, phone=body.phone,
@@ -141,12 +139,12 @@ async def telegram_userbot_start(body: TelegramUserbotStart, request: Request,
 @authed.post("/integrations/telegram/userbot/complete",
              response_model=TelegramUserbotStatus)
 async def telegram_userbot_complete(body: TelegramUserbotComplete, request: Request,
-                                    device: sqlite3.Row = Depends(require_device)):
+                                    tenant_id: int = Depends(require_tenant)):
     """Finish signing in. 409 means the account has 2FA and needs a password."""
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    tenant_id = int(device["tenant_id"])
+    tenant_id = tenant_id
     try:
         await tg_userbot.complete_login(rt, tenant_id, code=body.code,
                                         password=body.password)
@@ -165,25 +163,25 @@ async def telegram_userbot_complete(body: TelegramUserbotComplete, request: Requ
 @authed.get("/integrations/telegram/userbot",
             response_model=TelegramUserbotStatus)
 async def telegram_userbot_status(request: Request,
-                                  device: sqlite3.Row = Depends(require_device)):
+                                  tenant_id: int = Depends(require_tenant)):
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
     return TelegramUserbotStatus(
-        **tg_userbot.status(rt, TenantScope(rt.db, int(device["tenant_id"]))))
+        **tg_userbot.status(rt, TenantScope(rt.db, tenant_id)))
 
 
 @authed.delete("/integrations/telegram/userbot", response_model=ToolCallResponse)
 async def telegram_userbot_unlink(request: Request,
-                                  device: sqlite3.Row = Depends(require_device)):
+                                  tenant_id: int = Depends(require_tenant)):
     rt = request.app.state.rt
-    revoked = await tg_userbot.unlink(rt, int(device["tenant_id"]))
+    revoked = await tg_userbot.unlink(rt, tenant_id)
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 
 @authed.get("/integrations/whatsapp/consent", response_model=WhatsAppConsent)
 async def whatsapp_consent(request: Request,
-                           device: sqlite3.Row = Depends(require_device)):
+                           tenant_id: int = Depends(require_tenant)):
     """The permanent-ban warning the app must display, and its version.
 
     Served as its own endpoint so the app cannot render a paraphrase: it shows
@@ -194,12 +192,12 @@ async def whatsapp_consent(request: Request,
 
 @authed.post("/integrations/whatsapp/link", response_model=WhatsAppStatus)
 async def whatsapp_link(body: WhatsAppLinkRequest, request: Request,
-                        device: sqlite3.Row = Depends(require_device)):
+                        tenant_id: int = Depends(require_tenant)):
     """Start pairing. REFUSED (400) unless the ban warning was acknowledged."""
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    tenant_id = int(device["tenant_id"])
+    tenant_id = tenant_id
     try:
         wa_integration.start_link(
             rt, tenant_id,
@@ -217,19 +215,19 @@ async def whatsapp_link(body: WhatsAppLinkRequest, request: Request,
 
 @authed.get("/integrations/whatsapp", response_model=WhatsAppStatus)
 async def whatsapp_status(request: Request,
-                          device: sqlite3.Row = Depends(require_device)):
+                          tenant_id: int = Depends(require_tenant)):
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    scope = TenantScope(rt.db, int(device["tenant_id"]))
+    scope = TenantScope(rt.db, tenant_id)
     return WhatsAppStatus(**wa_integration.status(rt, scope))
 
 
 @authed.delete("/integrations/whatsapp", response_model=ToolCallResponse)
 async def whatsapp_unlink(request: Request,
-                          device: sqlite3.Row = Depends(require_device)):
+                          tenant_id: int = Depends(require_tenant)):
     rt = request.app.state.rt
-    revoked = await wa_integration.unlink(rt, int(device["tenant_id"]))
+    revoked = await wa_integration.unlink(rt, tenant_id)
     return ToolCallResponse(result='{"ok": %s}' % ("true" if revoked else "false"))
 
 

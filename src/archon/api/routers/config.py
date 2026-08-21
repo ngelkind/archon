@@ -7,11 +7,12 @@ import json
 from fastapi import APIRouter, Depends, Request
 
 from ...db import repo
-from ..auth import require_device
-from ..ctx import api_owner_ctx
+from ...db.tenancy import TenantScope
+from ..auth import require_tenant
+from ..ctx import tenant_ctx
 from ..schemas import ConfigPut, ConfigResponse, ToolCallResponse
 
-router = APIRouter(dependencies=[Depends(require_device)], tags=["config"])
+router = APIRouter(dependencies=[Depends(require_tenant)], tags=["config"])
 
 
 def _redact(key: str, value_json: str):
@@ -25,16 +26,19 @@ def _redact(key: str, value_json: str):
 
 
 @router.get("/config", response_model=ConfigResponse)
-async def get_config(request: Request) -> ConfigResponse:
-    rows = repo.setting_all(request.app.state.rt.db)
+async def get_config(request: Request,
+                     tenant_id: int = Depends(require_tenant)) -> ConfigResponse:
+    rt = request.app.state.rt
+    rows = repo.setting_all(TenantScope(rt.db, tenant_id))
     return ConfigResponse(settings={r["key"]: _redact(r["key"], r["value_json"]) for r in rows})
 
 
 @router.put("/config/{key}", response_model=ToolCallResponse)
-async def put_config(key: str, body: ConfigPut, request: Request) -> ToolCallResponse:
+async def put_config(key: str, body: ConfigPut, request: Request,
+                     tenant_id: int = Depends(require_tenant)) -> ToolCallResponse:
     rt = request.app.state.rt
     result = await rt.registry.dispatch(
-        api_owner_ctx(rt), "settings_set",
+        tenant_ctx(rt, tenant_id), "settings_set",
         {"key": key, "value_json": json.dumps(body.value, ensure_ascii=False)},
     )
     return ToolCallResponse(result=result)

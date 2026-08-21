@@ -17,23 +17,25 @@ import asyncio
 
 from fastapi import APIRouter, Query, WebSocket
 
-from ...db import repo
-from ..security import hash_secret
+from ..auth import tenant_for_token
 
 router = APIRouter(tags=["stream"])
 
 _POLICY_VIOLATION = 1008
 
 
-def _authenticate(websocket: WebSocket, token: str | None):
+def _authenticate(websocket: WebSocket, token: str | None) -> int | None:
+    """The tenant behind this socket, or None.
+
+    Uses the same resolver as the HTTP routes, so a product user's JWT works
+    here too — and /stream can never drift from the rest of the API.
+    """
     rt = websocket.app.state.rt
     header = websocket.headers.get("authorization", "")
     raw = header[len("Bearer "):].strip() if header.startswith("Bearer ") else (token or "")
     if not raw:
         return None
-    return repo.api_device_by_token_hash(
-        rt.db, hash_secret(rt.settings.api_token_pepper, raw)
-    )
+    return tenant_for_token(rt, raw)
 
 
 async def _forward(websocket: WebSocket, queue: asyncio.Queue) -> None:
@@ -52,11 +54,10 @@ async def _until_disconnect(websocket: WebSocket) -> None:
 @router.websocket("/stream")
 async def stream(websocket: WebSocket, token: str | None = Query(default=None)) -> None:
     rt = websocket.app.state.rt
-    device = _authenticate(websocket, token)
-    if device is None:
+    tenant_id = _authenticate(websocket, token)
+    if tenant_id is None:
         await websocket.close(code=_POLICY_VIOLATION)
         return
-    repo.api_device_touch(rt.db, int(device["id"]))
     await websocket.accept()
 
     with rt.events.subscription() as queue:
