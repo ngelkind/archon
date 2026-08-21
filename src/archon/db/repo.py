@@ -1072,15 +1072,23 @@ def telegram_link_revoke(store: Store) -> bool:
     return cur.rowcount > 0
 
 
-def telegram_link_set_connection(store: Store, *, business_connection_id: str | None,
-                                 enabled: bool) -> bool:
-    """Record the Business connection Telegram just issued for this tenant."""
+def telegram_link_set_connection(store: Store, *, connection_hash: str | None,
+                                 secret_envelope: str | None,
+                                 rights_json: str | None, enabled: bool) -> bool:
+    """Record the Business connection Telegram just issued for this tenant.
+
+    The id is stored twice: hashed (so inbound updates can be routed) and
+    encrypted (so sends can use it). Disconnecting clears both, which is what
+    makes a revoked connection unusable rather than merely flagged."""
     sc = as_scope(store)
     cur = sc.execute(
-        "UPDATE telegram_links SET business_connection_id = ?, is_enabled = ?, "
-        "connected_at = ? WHERE tenant_id = ? AND revoked_at IS NULL",
-        (business_connection_id, int(enabled), _now() if enabled else None,
-         sc.tenant_id),
+        "UPDATE telegram_links SET connection_hash = ?, secret_envelope = ?, "
+        "rights_json = ?, is_enabled = ?, connected_at = ? "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (connection_hash if enabled else None,
+         secret_envelope if enabled else None,
+         rights_json if enabled else None,
+         int(enabled), _now() if enabled else None, sc.tenant_id),
     )
     return cur.rowcount > 0
 
@@ -1090,11 +1098,11 @@ def telegram_link_set_connection(store: Store, *, business_connection_id: str | 
 # like api_device_by_token_hash. Both keys are issued by Telegram, not by a
 # caller, and each resolves to at most one live tenant.
 
-def telegram_tenant_by_connection(db: Db, business_connection_id: str) -> int | None:
+def telegram_tenant_by_connection_hash(db: Db, connection_hash: str) -> int | None:
     row = db.query_one(
         "SELECT tenant_id FROM telegram_links "
-        "WHERE business_connection_id = ? AND revoked_at IS NULL",
-        (business_connection_id,),
+        "WHERE connection_hash = ? AND revoked_at IS NULL AND is_enabled = 1",
+        (connection_hash,),
     )
     return int(row["tenant_id"]) if row else None
 
@@ -1142,3 +1150,18 @@ def telegram_link_code_consume(db: Db, code_hash: str) -> int | None:
         "SELECT tenant_id FROM telegram_link_codes WHERE code_hash = ?", (code_hash,)
     )
     return int(row["tenant_id"]) if row else None
+
+
+def message_last_inbound_ts(store: Store, chat_pk: int) -> str | None:
+    """When this chat last sent US something.
+
+    Telegram's Business API only permits replying within 24 hours of the user's
+    last message, so this is the clock a send has to check.
+    """
+    sc = as_scope(store)
+    row = sc.query_one(
+        "SELECT MAX(ts) AS ts FROM messages "
+        "WHERE tenant_id = ? AND chat_pk = ? AND is_from_me = 0",
+        (sc.tenant_id, chat_pk),
+    )
+    return row["ts"] if row and row["ts"] else None

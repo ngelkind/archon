@@ -192,12 +192,9 @@ async def run(rt: Runtime) -> None:
     bot, dp = build(rt)
     confirm.register_handlers(dp, rt)
     business.register(dp, rt)
-    if rt.settings.multitenant_enabled:
-        # Product front door: /start linking and DMs from linked users. Only in
-        # product mode, so the single-user dispatcher is byte-for-byte as before.
-        from . import product
-
-        product.register(dp, rt)
+    # Product users are served by a SEPARATE bot (platforms/telegram/product.py)
+    # with its own token and polling loop, so this dispatcher stays the owner's
+    # alone — exactly as it was before multi-tenancy.
     rt.clients["control_bot"] = bot
     # A SEPARATE bot instance (same token) dedicated to out-of-band sends
     # (log-channel cards, capture, owner alerts). The polling bot closes its

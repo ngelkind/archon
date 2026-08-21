@@ -30,6 +30,9 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import json
+
+from ..crypto import CredentialCryptoError, decrypt, encrypt
 from ..db import repo
 from ..db.tenancy import TenantScope
 
@@ -90,17 +93,30 @@ def complete_link(rt: Any, *, code: str, tg_user_id: str,
 
 
 def record_connection(rt: Any, *, tg_user_id: str, business_connection_id: str,
-                      enabled: bool) -> int | None:
+                      enabled: bool, rights: dict[str, Any] | None = None
+                      ) -> int | None:
     """Handle a Business connection update; returns the tenant, or None if the
-    Telegram account was never linked to one."""
+    Telegram account was never linked to one.
+
+    The connection id is stored hashed (to route inbound) and encrypted (to
+    send), never in the clear — it is a send-as-them capability.
+    """
     tenant_id = repo.telegram_tenant_by_user_id(rt.db, str(tg_user_id))
     if tenant_id is None:
         rt.audit.note("telegram_connection_unlinked_user",
                       tg_user_id=str(tg_user_id))
         return None
+    envelope = None
+    if enabled:
+        envelope = encrypt(
+            rt.settings.credential_encryption_key, business_connection_id,
+            tenant_id=tenant_id, purpose=PROVIDER,
+        )
     repo.telegram_link_set_connection(
         TenantScope(rt.db, tenant_id),
-        business_connection_id=business_connection_id if enabled else None,
+        connection_hash=_hash(rt, business_connection_id) if enabled else None,
+        secret_envelope=envelope,
+        rights_json=json.dumps(rights or {}) if enabled else None,
         enabled=enabled,
     )
     rt.audit.note("telegram_business_connection", tenant_id=tenant_id,
@@ -109,10 +125,12 @@ def record_connection(rt: Any, *, tg_user_id: str, business_connection_id: str,
 
 
 def tenant_for_connection(rt: Any, business_connection_id: str | None) -> int | None:
-    """Route an inbound business message to its tenant."""
+    """Route an inbound business message to its tenant, via the stored hash."""
     if not business_connection_id:
         return None
-    return repo.telegram_tenant_by_connection(rt.db, business_connection_id)
+    return repo.telegram_tenant_by_connection_hash(
+        rt.db, _hash(rt, business_connection_id)
+    )
 
 
 def tenant_for_user(rt: Any, tg_user_id: str | int) -> int | None:
@@ -120,12 +138,44 @@ def tenant_for_user(rt: Any, tg_user_id: str | int) -> int | None:
     return repo.telegram_tenant_by_user_id(rt.db, str(tg_user_id))
 
 
-def connection_id_for(store: Any) -> str | None:
-    """This tenant's Business connection id, for sending as them."""
+def connection_id_for(rt: Any, store: Any) -> str | None:
+    """Decrypt this tenant's Business connection id, for sending as them."""
     row = repo.telegram_link_get(store)
-    if row is None or not row["is_enabled"]:
+    if row is None or not row["is_enabled"] or not row["secret_envelope"]:
         return None
-    return row["business_connection_id"]
+    from ..db.tenancy import tenant_id_of
+
+    try:
+        return decrypt(rt.settings.credential_encryption_key,
+                       row["secret_envelope"],
+                       tenant_id=tenant_id_of(store), purpose=PROVIDER)
+    except CredentialCryptoError as exc:
+        rt.audit.note("telegram_connection_undecryptable", error=str(exc)[:200])
+        return None
+
+
+def granted_rights(store: Any) -> dict[str, Any]:
+    """What the user's Business connection actually permits."""
+    row = repo.telegram_link_get(store)
+    if row is None or not row["rights_json"]:
+        return {}
+    try:
+        return json.loads(row["rights_json"])
+    except ValueError:
+        return {}
+
+
+def can_reply(store: Any) -> bool:
+    """Whether this connection may send at all.
+
+    Telegram lets a user grant a Business bot read access without reply access;
+    attempting to send then fails at the API. Checking up front turns that into
+    a clear message instead of an opaque Telegram error.
+    """
+    rights = granted_rights(store)
+    if not rights:
+        return True          # older clients send no rights object; let Telegram decide
+    return bool(rights.get("can_reply", True))
 
 
 def status(store: Any) -> dict[str, Any]:
@@ -134,7 +184,7 @@ def status(store: Any) -> dict[str, Any]:
         return {"linked": False, "connected": False}
     return {
         "linked": True,
-        "connected": bool(row["is_enabled"] and row["business_connection_id"]),
+        "connected": bool(row["is_enabled"] and row["connection_hash"]),
         "tg_username": row["tg_username"],
         "tg_name": row["tg_name"],
         "linked_at": row["linked_at"],
@@ -147,3 +197,40 @@ def unlink(rt: Any, tenant_id: int) -> bool:
     if revoked:
         rt.audit.note("telegram_unlinked", tenant_id=tenant_id)
     return revoked
+
+
+#: Telegram permits a Business bot to reply only within 24h of the user's last
+#: message. There is no proactive send.
+REPLY_WINDOW_HOURS = 24
+
+
+class ReplyWindowExpired(RuntimeError):
+    """The 24-hour Business reply window has closed for this chat."""
+
+
+def check_reply_window(store: Any, chat_pk: int | None) -> None:
+    """Raise if we may not reply in this chat right now.
+
+    Enforced locally rather than left to Telegram so the agent gets an
+    explanatory failure it can relay ("I can't message them until they write
+    again") instead of a bare API error — and so we never *attempt* a send that
+    the platform would treat as unsolicited.
+    """
+    from datetime import UTC, datetime
+
+    if chat_pk is None:
+        return
+    last = repo.message_last_inbound_ts(store, chat_pk)
+    if last is None:
+        raise ReplyWindowExpired(
+            "Telegram only allows replying within "
+            f"{REPLY_WINDOW_HOURS}h of the other person's last message, and "
+            "they have not written in this chat yet"
+        )
+    seen = datetime.strptime(last, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    hours = (datetime.now(UTC) - seen).total_seconds() / 3600
+    if hours > REPLY_WINDOW_HOURS:
+        raise ReplyWindowExpired(
+            f"Telegram's {REPLY_WINDOW_HOURS}h reply window has closed "
+            f"(they last wrote {int(hours)}h ago) — they need to message first"
+        )

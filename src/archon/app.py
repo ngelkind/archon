@@ -157,6 +157,16 @@ async def main() -> None:
         asyncio.create_task(_supervise(rt, "testconsole", lambda: testconsole.watch(rt)))
     )
 
+    from .platforms.telegram import product as tg_product
+
+    if tg_product.enabled(rt):
+        tasks.append(
+            asyncio.create_task(
+                _supervise(rt, "product_bot", lambda: tg_product.run(rt)))
+        )
+    else:
+        rt.health["product_bot"] = "disabled (multitenant + PRODUCT_TELEGRAM_BOT_TOKEN)"
+
     if rt.settings.ntfy_base_url.strip():
         # Wakes paired devices for approvals/alerts. Content-free payloads; the
         # notifier is a no-op unless this is configured, so registering is safe.

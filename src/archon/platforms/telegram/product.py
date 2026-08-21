@@ -1,8 +1,12 @@
-"""The product bot's front door — handlers for people who are NOT the owner.
+"""The product bot — a SEPARATE Telegram bot from the owner's control bot.
 
-Registered only when ``multitenant_enabled``, so the single-user deployment's
-dispatcher is untouched: `control.py` keeps ignoring non-owner messages exactly
-as before, and these handlers never see the owner's updates.
+Product users connect *this* bot as their Business chatbot. Keeping it apart
+from the personal control bot matters operationally: a product incident (rate
+limits, a ban, a token rotation) cannot take the owner's own assistant down,
+and the owner's personal bot never shows up in a stranger's chat list.
+
+It runs only when ``multitenant_enabled`` AND ``product_telegram_bot_token`` is
+set, so the single-user deployment starts exactly the processes it always did.
 
 Two jobs:
 
@@ -22,7 +26,8 @@ from __future__ import annotations
 
 import html
 
-from aiogram import Dispatcher, F
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
@@ -37,13 +42,10 @@ _LINK_HELP = (
 
 
 def register(dp: Dispatcher, rt: Runtime) -> None:
-    owner_id = rt.settings.telegram_owner_id
+    """Attach the product handlers. This dispatcher serves ONLY the product bot,
+    so every update here belongs to a product user by construction."""
 
-    def is_product_user(message: Message) -> bool:
-        """Everyone except the owner, whose handlers live in control.py."""
-        return bool(message.from_user and message.from_user.id != owner_id)
-
-    @dp.message(Command("start"), F.func(is_product_user))
+    @dp.message(Command("start"))
     async def cmd_start(message: Message, command: CommandObject) -> None:
         user = message.from_user
         code = (command.args or "").strip()
@@ -73,7 +75,7 @@ def register(dp: Dispatcher, rt: Runtime) -> None:
             "You can also just talk to me here."
         )
 
-    @dp.message(F.text & ~F.text.startswith("/") & F.func(is_product_user))
+    @dp.message(F.text & ~F.text.startswith("/"))
     async def product_text(message: Message) -> None:
         """A linked user talking to their assistant in the bot chat."""
         from ...agent.owner import OwnerReplySink, run_owner_turn
@@ -101,3 +103,53 @@ def register(dp: Dispatcher, rt: Runtime) -> None:
 
         await run_owner_turn(rt, message.text or "", _Sink(),
                              tenant=tenant_context(rt, tenant_id))
+
+
+def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
+    bot = Bot(
+        token=rt.settings.product_telegram_bot_token,
+        default=DefaultBotProperties(parse_mode="HTML"),
+    )
+    dp = Dispatcher()
+    register(dp, rt)
+    # Product users' Business updates arrive on THIS bot, so the business
+    # handlers live here too — not on the owner's control bot.
+    from . import business
+
+    business.register(dp, rt)
+    return bot, dp
+
+
+def enabled(rt: Runtime) -> bool:
+    return bool(rt.settings.multitenant_enabled
+                and rt.settings.product_telegram_bot_token.strip())
+
+
+async def run(rt: Runtime) -> None:
+    """Supervised polling loop for the product bot."""
+    if not enabled(rt):
+        rt.health["product_bot"] = "disabled"
+        return
+
+    bot, dp = build(rt)
+    rt.clients["product_bot"] = bot
+    me = await bot.get_me()
+    rt.audit.note("product_bot_started", username=me.username)
+    # The deep link needs the @username; take it from Telegram rather than
+    # trusting config to match the token.
+    if not rt.settings.telegram_bot_username and me.username:
+        rt.settings.telegram_bot_username = me.username
+    rt.health["product_bot"] = f"polling @{me.username}"
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=[
+                "message",
+                "business_connection",
+                "business_message",
+                "edited_business_message",
+                "deleted_business_messages",
+            ],
+        )
+    finally:
+        rt.health["product_bot"] = "stopped"

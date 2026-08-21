@@ -15,15 +15,15 @@ from ..runtime import Runtime
 from .registry import Registry, ToolContext
 
 
-def _business_connection_id(store) -> str | None:
+def _business_connection_id(rt: Runtime, store) -> str | None:
     """The Business connection to send as, for whichever tenant this store is.
 
-    A product tenant's lives on their telegram_links row; the single-user
-    owner's is the legacy setting, which is still authoritative for them.
+    A product tenant's is decrypted from their telegram_links row; the
+    single-user owner's is the legacy setting, still authoritative for them.
     """
     from ..integrations import telegram as tg_integration
 
-    return (tg_integration.connection_id_for(store)
+    return (tg_integration.connection_id_for(rt, store)
             or repo.setting_get(store, "tg.business_connection_id", None))
 
 
@@ -40,11 +40,20 @@ async def _send_private_executor(rt: Runtime, payload: dict[str, Any], store) ->
                                              reply_to=payload.get("reply_to"))
         source = "userbot"
     else:
-        bot = rt.clients.get("control_bot")
-        conn_id = _business_connection_id(store)
+        from ..integrations import telegram as tg_integration
+
+        bot = rt.clients.get("product_bot") or rt.clients.get("control_bot")
+        conn_id = _business_connection_id(rt, store)
         if bot is None or not conn_id:
             raise RuntimeError("cannot send: Telegram userbot is down and there is "
                                "no Business connection")
+        if not tg_integration.can_reply(store):
+            raise RuntimeError(
+                "this Telegram Business connection was not granted permission "
+                "to reply — the user can enable it in Settings → Telegram "
+                "Business → Chatbots")
+        # Telegram forbids proactive sends: only inside the 24h reply window.
+        tg_integration.check_reply_window(store, payload.get("chat_pk"))
         sent = await bot.send_message(  # type: ignore[attr-defined]
             chat_id=int(ref), text=payload["text"],
             business_connection_id=conn_id, parse_mode=None)

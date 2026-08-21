@@ -90,6 +90,25 @@ def _to_inbound(rt: Runtime, message: Message, *, is_edit: bool = False,
     )
 
 
+def _rights_dict(connection: BusinessConnection) -> dict:
+    """The BusinessBotRights the user granted, as plain data.
+
+    Older Bot API versions expose a single `can_reply` bool instead of a rights
+    object; both are normalised here so the send path has one shape to check.
+    """
+    rights = getattr(connection, "rights", None)
+    if rights is None:
+        legacy = getattr(connection, "can_reply", None)
+        return {} if legacy is None else {"can_reply": bool(legacy)}
+    out = {}
+    for field in ("can_reply", "can_read_messages", "can_delete_sent_messages",
+                  "can_edit_name", "can_change_gift_settings"):
+        value = getattr(rights, field, None)
+        if value is not None:
+            out[field] = bool(value)
+    return out
+
+
 def _resolve_tenant(rt: Runtime, business_connection_id: str | None) -> int | None:
     """Which tenant an inbound business update belongs to.
 
@@ -116,6 +135,7 @@ def register(dp: Dispatcher, rt: Runtime) -> None:
             tenant_id = tg_integration.record_connection(
                 rt, tg_user_id=str(user.id) if user else "",
                 business_connection_id=connection.id, enabled=bool(enabled),
+                rights=_rights_dict(connection),
             )
             if tenant_id is None:
                 # Connected by someone who never linked their account: tell them

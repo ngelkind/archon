@@ -24,6 +24,7 @@ def _rt(tmp_path, multitenant=True):
     rt = make_rt(tmp_path)
     rt.settings.multitenant_enabled = multitenant
     rt.settings.telegram_bot_username = "ArchonProductBot"
+    rt.settings.credential_encryption_key = "a" * 64
     return rt
 
 
@@ -152,7 +153,7 @@ def test_disconnecting_clears_the_routing_key(tmp_path):
                          enabled=False)
     assert tg.tenant_for_connection(rt, "conn-B") is None
     assert tg.status(TenantScope(rt.db, b_id))["connected"] is False
-    assert tg.connection_id_for(TenantScope(rt.db, b_id)) is None
+    assert tg.connection_id_for(rt, TenantScope(rt.db, b_id)) is None
 
 
 def test_two_tenants_connections_route_independently(tmp_path):
@@ -168,8 +169,8 @@ def test_two_tenants_connections_route_independently(tmp_path):
 
     assert tg.tenant_for_connection(rt, "conn-B") == b_id
     assert tg.tenant_for_connection(rt, "conn-C") == c_id
-    assert tg.connection_id_for(TenantScope(rt.db, b_id)) == "conn-B"
-    assert tg.connection_id_for(TenantScope(rt.db, c_id)) == "conn-C"
+    assert tg.connection_id_for(rt, TenantScope(rt.db, b_id)) == "conn-B"
+    assert tg.connection_id_for(rt, TenantScope(rt.db, c_id)) == "conn-C"
 
 
 def test_resolve_tenant_drops_unknown_connections_in_product_mode(tmp_path):
@@ -264,12 +265,12 @@ def test_sends_use_the_callers_own_business_connection(tmp_path):
     tg.record_connection(rt, tg_user_id="666", business_connection_id="conn-C",
                          enabled=True)
 
-    assert _business_connection_id(TenantScope(rt.db, b_id)) == "conn-B"
-    assert _business_connection_id(TenantScope(rt.db, c_id)) == "conn-C"
+    assert _business_connection_id(rt, TenantScope(rt.db, b_id)) == "conn-B"
+    assert _business_connection_id(rt, TenantScope(rt.db, c_id)) == "conn-C"
 
     # the single-user owner still uses the legacy setting
     repo.setting_set(owner_scope(rt.db), "tg.business_connection_id", "legacy-conn")
-    assert _business_connection_id(owner_scope(rt.db)) == "legacy-conn"
+    assert _business_connection_id(rt, owner_scope(rt.db)) == "legacy-conn"
 
 
 # --- unlink ------------------------------------------------------------------
@@ -341,3 +342,182 @@ def test_telegram_endpoints_require_auth(tmp_path):
     client = _client(rt)
     assert client.post("/integrations/telegram/link").status_code == 401
     assert client.get("/integrations/telegram").status_code == 401
+
+
+# --- the connection id is a secret, not an identifier ------------------------
+
+def test_connection_id_is_never_stored_in_the_clear(tmp_path):
+    """Whoever holds a business_connection_id can send as that user, so it is
+    encrypted at rest and only a hash is indexed for routing."""
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    _link(rt, b_id, "555")
+    tg.record_connection(rt, tg_user_id="555", business_connection_id="conn-SECRET",
+                         enabled=True)
+
+    rows = rt.db.query("SELECT * FROM telegram_links")
+    blob = str([dict(r) for r in rows])
+    assert "conn-SECRET" not in blob
+    # ...but it round-trips for the tenant that owns it
+    assert tg.connection_id_for(rt, TenantScope(rt.db, b_id)) == "conn-SECRET"
+
+
+def test_another_tenant_cannot_decrypt_the_connection(tmp_path):
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    c_id = _new_tenant(rt, "c@example.com")
+    _link(rt, b_id, "555")
+    _link(rt, c_id, "666")
+    tg.record_connection(rt, tg_user_id="555", business_connection_id="conn-B",
+                         enabled=True)
+
+    # move B's envelope onto C's row, as a stolen-DB attacker might
+    envelope = rt.db.query_one(
+        "SELECT secret_envelope FROM telegram_links WHERE tenant_id = ?",
+        (b_id,))["secret_envelope"]
+    rt.db.execute(
+        "UPDATE telegram_links SET secret_envelope = ?, is_enabled = 1 "
+        "WHERE tenant_id = ?", (envelope, c_id))
+    assert tg.connection_id_for(rt, TenantScope(rt.db, c_id)) is None
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "telegram_connection_undecryptable" in actions
+
+
+# --- BusinessBotRights -------------------------------------------------------
+
+def test_send_is_refused_when_reply_permission_was_not_granted(tmp_path):
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    _link(rt, b_id, "555")
+    tg.record_connection(rt, tg_user_id="555", business_connection_id="conn-B",
+                         enabled=True, rights={"can_reply": False,
+                                               "can_read_messages": True})
+    store = TenantScope(rt.db, b_id)
+    assert tg.granted_rights(store) == {"can_reply": False,
+                                        "can_read_messages": True}
+    assert tg.can_reply(store) is False
+
+
+def test_reply_is_allowed_when_granted_or_unspecified(tmp_path):
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    _link(rt, b_id, "555")
+    tg.record_connection(rt, tg_user_id="555", business_connection_id="conn-B",
+                         enabled=True, rights={"can_reply": True})
+    assert tg.can_reply(TenantScope(rt.db, b_id)) is True
+
+    # an older client sending no rights object must not be treated as a denial
+    c_id = _new_tenant(rt, "c@example.com")
+    _link(rt, c_id, "666")
+    tg.record_connection(rt, tg_user_id="666", business_connection_id="conn-C",
+                         enabled=True, rights=None)
+    assert tg.can_reply(TenantScope(rt.db, c_id)) is True
+
+
+def test_rights_are_normalised_from_either_bot_api_shape(tmp_path):
+    from archon.platforms.telegram.business import _rights_dict
+
+    class Rights:
+        can_reply = True
+        can_read_messages = False
+
+    class NewStyle:
+        rights = Rights()
+
+    class OldStyle:
+        rights = None
+        can_reply = False
+
+    assert _rights_dict(NewStyle()) == {"can_reply": True,
+                                        "can_read_messages": False}
+    assert _rights_dict(OldStyle()) == {"can_reply": False}
+
+
+# --- the 24-hour reply window ------------------------------------------------
+
+def test_reply_window_blocks_proactive_sends(tmp_path):
+    """Telegram forbids messaging first; we enforce it locally so the agent gets
+    an explanation instead of an opaque API error."""
+    from archon.models import InboundMessage
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    store = TenantScope(rt.db, b_id)
+    chat_pk = repo.chat_upsert(store, "tg", "42", "Dana", "private")
+
+    # nobody has written to us in this chat -> no window at all
+    with pytest.raises(tg.ReplyWindowExpired, match="not written"):
+        tg.check_reply_window(store, chat_pk)
+
+    def _cache(hours_ago: float) -> None:
+        from datetime import timedelta
+
+        when = datetime.now(UTC) - timedelta(hours=hours_ago)
+        repo.message_upsert(store, InboundMessage(
+            platform="tg", source="business", chat_id="42", chat_kind="private",
+            msg_id=f"m{hours_ago}", sender_id="dana", ts=when, text="hi",
+            tenant_id=b_id), chat_pk)
+
+    _cache(30)                                  # stale: window closed
+    with pytest.raises(tg.ReplyWindowExpired, match="window has closed"):
+        tg.check_reply_window(store, chat_pk)
+
+    _cache(1)                                   # fresh: allowed
+    tg.check_reply_window(store, chat_pk)
+
+
+def test_reply_window_ignores_our_own_messages(tmp_path):
+    """Sending does not re-open the window — only the other person writing does,
+    otherwise one reply would let us message forever."""
+    from datetime import timedelta
+
+    from archon.models import InboundMessage
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    store = TenantScope(rt.db, b_id)
+    chat_pk = repo.chat_upsert(store, "tg", "42", "Dana", "private")
+
+    repo.message_upsert(store, InboundMessage(
+        platform="tg", source="business", chat_id="42", chat_kind="private",
+        msg_id="theirs", sender_id="dana", ts=datetime.now(UTC) - timedelta(hours=40),
+        text="old", tenant_id=b_id), chat_pk)
+    repo.message_cache_outgoing(store, chat_pk=chat_pk, platform="tg",
+                                chat_id="42", msg_id="mine", source="business",
+                                text="just sent")
+
+    with pytest.raises(tg.ReplyWindowExpired):
+        tg.check_reply_window(store, chat_pk)
+
+
+def test_reply_window_is_skipped_when_there_is_no_chat(tmp_path):
+    """A brand-new outbound (no cached chat) is left to Telegram to judge."""
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    tg.check_reply_window(TenantScope(rt.db, b_id), None)
+
+
+# --- the product bot is its own bot ------------------------------------------
+
+def test_product_bot_only_runs_under_the_flag_with_a_token(tmp_path):
+    from archon.platforms.telegram import product
+
+    rt = _rt(tmp_path, multitenant=False)
+    rt.settings.product_telegram_bot_token = "123:abc"
+    assert product.enabled(rt) is False          # flag off
+
+    rt.settings.multitenant_enabled = True
+    assert product.enabled(rt) is True
+
+    rt.settings.product_telegram_bot_token = ""
+    assert product.enabled(rt) is False          # no separate token
+
+
+def test_control_bot_no_longer_hosts_product_handlers():
+    """The owner's dispatcher must be the owner's alone."""
+    import inspect
+
+    from archon.platforms.telegram import control
+
+    src = inspect.getsource(control)
+    assert "product.register" not in src

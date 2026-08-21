@@ -98,8 +98,13 @@ class Settings(BaseSettings):
     google_oauth_redirect_uri: str = ""
 
     # --- Telegram product bot (per-tenant Business linking) ---
-    # The @username of the bot users connect as their Business chatbot. Only
-    # needed to build t.me deep links; the token is telegram_bot_token.
+    # A SEPARATE bot from the owner's personal control bot: product users
+    # connect this one as their Business chatbot. Keeping them apart means a
+    # product incident (rate limits, a ban, a token rotation) cannot take the
+    # owner's own assistant down, and the owner's bot never appears in a
+    # stranger's chat list. Empty = the product bot does not run.
+    product_telegram_bot_token: str = ""
+    # Its @username, used to build t.me deep links.
     telegram_bot_username: str = ""
 
     # --- Push (self-hosted ntfy / UnifiedPush; off by default) ---
