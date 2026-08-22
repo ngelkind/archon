@@ -1169,11 +1169,16 @@ def message_last_inbound_ts(store: Store, chat_pk: int) -> str | None:
 
 # --- whatsapp links (BYO, consent-gated) -------------------------------------
 
-def whatsapp_link_create(store: Store, *, consent_version: str) -> int:
+def whatsapp_link_create(store: Store, *, consent_version: str,
+                         phone_e164: str | None = None) -> int:
     """Start a link for this tenant, recording the consent that permitted it.
 
     Any previous live link is revoked first: two sessions for one tenant would
     fight over the same linked device, and WhatsApp treats that as suspicious.
+
+    ``phone_e164`` is the number the user ASKED to pair, stored before the
+    attempt so a failure still says which number was tried — usually the whole
+    diagnostic when someone mistypes their own number.
     """
     sc = as_scope(store)
     sc.execute(
@@ -1183,10 +1188,40 @@ def whatsapp_link_create(store: Store, *, consent_version: str) -> int:
     )
     cur = sc.execute(
         "INSERT INTO whatsapp_links (tenant_id, status, consent_version, "
-        "consent_acknowledged_at, last_status_at) VALUES (?, 'pending', ?, ?, ?)",
-        (sc.tenant_id, consent_version, _now(), _now()),
+        "consent_acknowledged_at, last_status_at, phone_e164) "
+        "VALUES (?, 'pending', ?, ?, ?, ?)",
+        (sc.tenant_id, consent_version, _now(), _now(), phone_e164),
     )
     return int(cur.lastrowid)
+
+
+def whatsapp_link_set_pair_code(store: Store, *, code: str,
+                                expires_at: str) -> bool:
+    """Publish the pairing code for the app to display, and move to awaiting_code."""
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE whatsapp_links SET pair_code = ?, pair_code_expires_at = ?, "
+        "status = 'awaiting_code', last_status_at = ? "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (code, expires_at, _now(), sc.tenant_id),
+    )
+    return cur.rowcount > 0
+
+
+def whatsapp_link_clear_pair_code(store: Store) -> bool:
+    """Drop the code once it can no longer be used (paired, failed, revoked).
+
+    Kept out of ``set_status`` so callers cannot forget: a stale code left on a
+    paired row would keep the app rendering an entry prompt for a link that has
+    already completed.
+    """
+    sc = as_scope(store)
+    cur = sc.execute(
+        "UPDATE whatsapp_links SET pair_code = NULL, pair_code_expires_at = NULL "
+        "WHERE tenant_id = ? AND revoked_at IS NULL",
+        (sc.tenant_id,),
+    )
+    return cur.rowcount > 0
 
 
 def whatsapp_link_get(store: Store) -> sqlite3.Row | None:

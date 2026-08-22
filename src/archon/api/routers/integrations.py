@@ -193,18 +193,30 @@ async def whatsapp_consent(request: Request,
 @authed.post("/integrations/whatsapp/link", response_model=WhatsAppStatus)
 async def whatsapp_link(body: WhatsAppLinkRequest, request: Request,
                         tenant_id: int = Depends(require_tenant)):
-    """Start pairing. REFUSED (400) unless the ban warning was acknowledged."""
+    """Start pairing by phone number. REFUSED (400) without the ban warning.
+
+    Returns the status carrying ``pair_code`` — the 8 characters the user types
+    into WhatsApp. Re-POSTing issues a fresh code, which is the retry path when
+    one expires.
+    """
     from ...db.tenancy import TenantScope
 
     rt = request.app.state.rt
-    tenant_id = tenant_id
     try:
-        wa_integration.start_link(
+        await wa_integration.start_link(
             rt, tenant_id,
             consent_acknowledged=body.consent_acknowledged,
+            phone=body.phone,
             consent_version=body.consent_version,
         )
     except wa_integration.ConsentRequired as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=str(exc)) from exc
+    # A missing or malformed number is the caller's mistake, not an outage —
+    # 400 so the app re-prompts for the number rather than offering a blanket
+    # retry. Carried by the exception TYPE; matching on message text would break
+    # the moment someone reworded an error.
+    except wa_integration.PhoneRequired as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail=str(exc)) from exc
     except wa_integration.WhatsAppLinkError as exc:

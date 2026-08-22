@@ -215,16 +215,33 @@ class WhatsAppLinkRequest(BaseModel):
     # Deliberately not defaulted to True anywhere: the caller has to say it.
     consent_acknowledged: bool = False
     consent_version: str | None = None
+    # Required in practice — phone-number pairing cannot start without it — but
+    # typed optional ON PURPOSE. A required field would make FastAPI reject the
+    # request with 422 before the consent gate is reached, so a caller omitting
+    # both would never be recorded as a consent refusal. Missing phone is a 400
+    # from the integration layer instead, after consent has been checked.
+    # E.164 with the leading '+' (e.g. "+972501234567"); normalised server-side.
+    phone: str | None = None
 
 
 class WhatsAppStatus(BaseModel):
     linked: bool
     status: str
+    #: not_linked | pending | awaiting_code | paired | failed | logged_out | banned
+    #: `linked` is true only for `paired`; the app drives its UI off `status`.
     phone: str | None = None
     consent_version: str | None = None
     consent_acknowledged_at: str | None = None
     paired_at: str | None = None
     last_error: str | None = None
+    # The 8-character code the user types into WhatsApp (Linked Devices -> Link
+    # a Device -> "Link with phone number instead"). Passed through exactly as
+    # whatsmeow returns it, no reformatting. Never sent back to us — it is
+    # display-only, so grouping it as ABCD-EFGH in the UI is purely cosmetic.
+    pair_code: str | None = None
+    # ISO-8601 UTC. Our staleness horizon rather than WhatsApp's own timer:
+    # past this, re-POST /link for a fresh code.
+    pair_code_expires_at: str | None = None
 
 
 class TelegramUserbotConsent(BaseModel):
