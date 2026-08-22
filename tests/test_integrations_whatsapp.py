@@ -719,3 +719,170 @@ def test_tenant_sends_are_paced(tmp_path):
 
     asyncio.run(_run())
     assert len(client.sent) == 2
+
+
+# --- the live pairing failure: PairPhone raced connect() ---------------------
+
+class _SlowClient:
+    """A client whose Go side becomes ready only after N readiness checks.
+
+    Models what neonize actually does: connect() returns a Task immediately
+    while the Go client is still being constructed, so `is_connected` is False
+    (or raises) for a while afterwards.
+    """
+
+    def __init__(self, ready_after: int = 3, raise_until_ready: bool = False):
+        self.checks = 0
+        self.ready_after = ready_after
+        self.raise_until_ready = raise_until_ready
+        self.paired_with: list[str] = []
+
+    @property
+    def is_connected(self) -> bool:
+        self.checks += 1
+        if self.checks < self.ready_after:
+            if self.raise_until_ready:
+                # The bridge call itself fails while the Go client is nil.
+                raise RuntimeError("client is nil")
+            return False
+        return True
+
+    def PairPhone(self, digits, show_push):        # noqa: N802 — neonize name
+        if self.checks < self.ready_after:
+            raise RuntimeError("client is nil")
+        self.paired_with.append(digits)
+        return "ACDE1234"
+
+
+def test_pairing_waits_for_the_socket_instead_of_racing_it(tmp_path):
+    """The live failure: PairPhoneError('client is nil').
+
+    neonize's connect() ends with `create_task(...)` and returns the Task, so
+    awaiting it yields a task that only finishes when the connection DIES. The
+    Go client is still being built when it returns — and PairPhone fired into
+    that gap. Readiness must be observed, not assumed.
+    """
+    rt = _rt(tmp_path)
+    client = _SlowClient(ready_after=3)
+
+    asyncio.run(wa.await_ready(rt, 2, client, timeout_s=5.0))
+
+    assert client.checks >= 3
+    assert client.is_connected
+
+
+def test_readiness_tolerates_the_bridge_call_failing_while_go_is_nil(tmp_path):
+    """`is_connected` can raise, not just return False, before Go is up.
+
+    That is the state being waited out, so it must not abort the wait — which
+    would turn a slow connect into an instant failure.
+    """
+    rt = _rt(tmp_path)
+    client = _SlowClient(ready_after=3, raise_until_ready=True)
+    asyncio.run(wa.await_ready(rt, 2, client, timeout_s=5.0))
+    assert client.is_connected
+
+
+def test_a_socket_that_never_comes_up_fails_loudly_and_is_audited(tmp_path):
+    """Bounded, not infinite: a hung connect must not hang the request."""
+    rt = _rt(tmp_path)
+    # A real tenant: the audit row carries a tenant_id FK to users(id), so a
+    # made-up id would fail the insert and the assertion below would be testing
+    # the test rather than the code.
+    b_id = _new_tenant(rt, "b@example.com")
+    never = _SlowClient(ready_after=10_000)
+
+    with pytest.raises(wa.WhatsAppLinkError, match="did not connect"):
+        asyncio.run(wa.await_ready(rt, b_id, never, timeout_s=0.6))
+
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "wa_connect_timeout" in actions
+
+
+def test_readiness_waits_for_connected_not_logged_in(tmp_path):
+    """Pairing happens on a connected, NOT-logged-in client.
+
+    Waiting for is_logged_in would deadlock: it cannot become true until the
+    user types the code, which they cannot do until we hand them one.
+    """
+    import inspect
+
+    src = inspect.getsource(wa.await_ready)
+    assert "is_connected" in src
+    assert "client.is_logged_in" not in src
+
+
+def test_a_pairing_failure_is_audited_and_drops_the_stale_client(tmp_path):
+    """What the live run could not find in the log.
+
+    Every failure — neonize's PairPhoneError included — must land as
+    wa_pair_code_failed with the row marked failed, because that note is the
+    first place anyone looks. The half-built session is evicted too, so a retry
+    does not reuse a client whose Go side never finished connecting.
+    """
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+
+    evicted: list[tuple] = []
+
+    async def _evict(tenant_id, kind=None):
+        evicted.append((tenant_id, kind))
+        return 1
+
+    rt.sessions.evict = _evict
+
+    async def _boom(_rt, _tid, _digits):
+        raise RuntimeError("PairPhoneError('client is nil')")
+
+    wa.request_pair_code = _boom          # autouse fixture restores it
+
+    with pytest.raises(wa.WhatsAppLinkError, match="could not request"):
+        _start(rt, b_id, consent_acknowledged=True)
+
+    row = repo.whatsapp_link_get(TenantScope(rt.db, b_id))
+    assert row["status"] == "failed"
+    assert "client is nil" in row["last_error"]
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "wa_pair_code_failed" in actions
+    assert (b_id, "whatsapp") in evicted
+
+
+def test_a_readiness_timeout_is_also_audited_as_a_pair_failure(tmp_path):
+    """The regression this file previously would NOT have caught.
+
+    WhatsAppLinkError used to be re-raised untouched, so a connect timeout left
+    the row 'pending' and wrote no wa_pair_code_failed row — which is exactly
+    why the live failure looked like it had vanished from the audit log.
+    """
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+
+    async def _timeout(_rt, _tid, _digits):
+        raise wa.WhatsAppLinkError("WhatsApp did not connect within 25s")
+
+    wa.request_pair_code = _timeout
+
+    with pytest.raises(wa.WhatsAppLinkError, match="did not connect"):
+        _start(rt, b_id, consent_acknowledged=True)
+
+    row = repo.whatsapp_link_get(TenantScope(rt.db, b_id))
+    assert row["status"] == "failed"
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "wa_pair_code_failed" in actions
+
+
+def test_build_client_actually_waits_before_returning(tmp_path):
+    """A correct readiness wait that nothing calls is the original bug again.
+
+    Pinned by source order rather than behaviour because standing up a real
+    neonize client in a test is the thing we cannot do — and this is precisely
+    the seam where "it looks right" already failed once, live.
+    """
+    import inspect
+
+    src = inspect.getsource(wa.build_client)
+    assert "await client.connect()" in src
+    assert "await_ready(" in src
+    assert src.index("await client.connect()") < src.index("await_ready(")
+    # and the result must be returned only after the wait
+    assert src.index("await_ready(") < src.rindex("return client")

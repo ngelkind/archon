@@ -264,13 +264,24 @@ async def start_link(rt: Any, tenant_id: int, *, consent_acknowledged: bool,
 
     try:
         code = await request_pair_code(rt, tenant_id, digits)
-    except WhatsAppLinkError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — surface as a link failure
+    except Exception as exc:  # noqa: BLE001 — every failure is a link failure
+        # Includes neonize's PairPhoneError and our own WhatsAppLinkError (e.g.
+        # the readiness timeout). Recording BEFORE re-raising is what makes the
+        # audit log the first place to look; an earlier version re-raised
+        # WhatsAppLinkError untouched, which meant a connect-timeout left no
+        # wa_* row at all.
         repo.whatsapp_link_set_status(scope, status="failed",
                                       last_error=repr(exc)[:300])
         rt.audit.note("wa_pair_code_failed", tenant_id=tenant_id,
                       error=repr(exc)[:200])
+        # Drop the half-built client: a retry must not reuse a session whose Go
+        # side never finished connecting, or every retry fails the same way.
+        try:
+            await rt.sessions.evict(tenant_id, PROVIDER)
+        except Exception:  # noqa: BLE001 — eviction is best-effort cleanup
+            pass
+        if isinstance(exc, WhatsAppLinkError):
+            raise
         raise WhatsAppLinkError(f"could not request a pairing code: {exc}") from exc
 
     expires_at = _expiry_iso(PAIR_CODE_TTL_S)
@@ -519,7 +530,62 @@ async def build_client(rt: Any, tenant_id: int):
 
     wire_events(rt, tenant_id, client)
     await client.connect()
+    await await_ready(rt, tenant_id, client)
     return client
+
+
+#: How long to wait for the websocket to come up before giving up on a session.
+READY_TIMEOUT_S = 25.0
+_READY_POLL_S = 0.25
+
+
+async def await_ready(rt: Any, tenant_id: int, client: Any,
+                      timeout_s: float = READY_TIMEOUT_S) -> None:
+    """Block until whatsmeow reports the socket is actually up.
+
+    WHY THIS IS NOT OPTIONAL, and why ``await connect()`` is not enough.
+    neonize's ``connect()`` ends with::
+
+        self.connect_task = self.loop.create_task(_connect_and_check())
+        return self.connect_task
+
+    so awaiting it yields a **Task**, not a connection — and that task only
+    completes when the connection *dies*, because the Go call it wraps blocks
+    for the lifetime of the session. Awaiting the returned task would therefore
+    hang forever; awaiting the coroutine (what we did) returns while the Go-side
+    client is still being constructed. That gap is what produced the live
+    ``PairPhoneError('client is nil')``: PairPhone reached a client that did not
+    exist yet.
+
+    So readiness has to be observed, not assumed. ``is_connected`` is
+    whatsmeow's own ``IsConnected`` through the ctypes bridge — the authoritative
+    answer — rather than a sleep long enough to usually work. A sleep would pass
+    on a fast box and fail on a slow one, which is the worst kind of green.
+
+    Note this waits for CONNECTED, not LOGGED IN. Pairing by definition happens
+    on a connected-but-not-logged-in client, so ``is_logged_in`` would never
+    become true before the user types the code and would deadlock the flow.
+    """
+    import asyncio
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            if client.is_connected:
+                return
+        except Exception:  # noqa: BLE001
+            # The Go client may not exist yet, in which case the bridge call
+            # itself fails. That is the state we are waiting out, not an error.
+            pass
+        await asyncio.sleep(_READY_POLL_S)
+
+    rt.audit.note("wa_connect_timeout", tenant_id=tenant_id,
+                  waited_s=round(timeout_s, 1))
+    raise WhatsAppLinkError(
+        f"WhatsApp did not connect within {timeout_s:.0f}s — the socket never "
+        "came up, so no pairing code could be requested. Try again."
+    )
 
 
 async def send_message(rt: Any, tenant_id: int, chat_jid: str,
