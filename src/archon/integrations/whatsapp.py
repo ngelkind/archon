@@ -210,6 +210,16 @@ def normalise_phone(raw: str | None) -> str:
             "account to link, in international format (e.g. +972501234567)"
         )
     digits = "".join(ch for ch in str(raw) if ch.isdigit())
+    # A leading 00 is the international prefix written the other common way —
+    # much of the world, Israel included, writes 00972… where E.164 writes
+    # +972…. Unambiguous to detect, because no country code starts with 0.
+    # Worth handling rather than rejecting: stripping only the '+' would leave
+    # 00972… looking like a VALID 14-digit number, so it would sail past the
+    # length check and fail at WhatsApp with an opaque error instead of a
+    # message the user could act on. A silent wrong number beats no number only
+    # from the code's point of view, never from the user's.
+    if digits.startswith("00"):
+        digits = digits[2:]
     if not digits:
         raise PhoneRequired(f"{raw!r} contains no digits to dial")
     # E.164 allows at most 15 digits; below 8 is not a reachable international

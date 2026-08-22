@@ -886,3 +886,27 @@ def test_build_client_actually_waits_before_returning(tmp_path):
     assert src.index("await client.connect()") < src.index("await_ready(")
     # and the result must be returned only after the wait
     assert src.index("await_ready(") < src.rindex("return client")
+
+
+def test_a_leading_00_international_prefix_is_converted_not_rejected():
+    """Much of the world writes 00972… where E.164 writes +972….
+
+    Found by android-app while aligning their client-side validator. It is the
+    nastiest shape of input bug: stripping only the '+' leaves 00972… looking
+    like a perfectly valid 14-digit number, so it passes the length check and
+    fails at WhatsApp with an error the user cannot decode — strictly worse
+    than a clean rejection. Unambiguous to detect, because no E.164 country
+    code begins with 0.
+    """
+    assert wa.normalise_phone("00972501234567") == "972501234567"
+    assert wa.normalise_phone("00 972 50 123 4567") == "972501234567"
+    assert wa.normalise_phone("0097250-123-4567") == "972501234567"
+    # and the + form is unaffected
+    assert wa.normalise_phone("+972501234567") == "972501234567"
+
+
+def test_a_bare_00_is_still_refused():
+    """Stripping the prefix must not turn junk into an empty 'valid' number."""
+    for bad in ("00", "0000", "00 - -"):
+        with pytest.raises(wa.PhoneRequired):
+            wa.normalise_phone(bad)
