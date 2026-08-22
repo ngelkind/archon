@@ -1063,9 +1063,13 @@ def test_start_link_resets_through_the_safe_helper(tmp_path):
     """
     import inspect
 
-    src = inspect.getsource(wa.start_link)
+    # Both halves of the entry point: start_link takes the per-tenant lock and
+    # _start_link_locked holds it. Checked together so a refactor that moves the
+    # body between them cannot make this pass vacuously — the first version of
+    # this test read only start_link and went green the moment the body moved.
+    src = inspect.getsource(wa.start_link) + inspect.getsource(wa._start_link_locked)
     assert "reset_session(" in src
-    # the unsafe pairing must not reappear at this call site
+    # the unsafe pairing must not reappear anywhere on this path
     assert "wipe_session(" not in src
 
 
@@ -1153,3 +1157,163 @@ def test_the_client_is_shut_down_before_the_evict_hook_runs(tmp_path):
     asyncio.run(reg.evict(b_id, "wa-test"))
 
     assert order == ["stop", "hook"], order
+
+
+# --- the readiness gate must ACTUALLY wait -----------------------------------
+
+class _AsyncPropClient:
+    """Models neonize's aioze client, where `is_connected` is the trap.
+
+    The property is annotated `-> bool` and documented as returning a bool, but
+    in the async client `self.__client` is `async_gocode`, so the body returns
+    an unawaited COROUTINE — which is always truthy.
+    """
+
+    def __init__(self, ready_after: int = 3) -> None:
+        self.checks = 0
+        self.ready_after = ready_after
+
+    @property
+    def is_connected(self):
+        async def _check():
+            self.checks += 1
+            return self.checks >= self.ready_after
+        return _check()          # a coroutine, exactly like neonize's
+
+
+def test_readiness_awaits_a_coroutine_valued_is_connected(tmp_path):
+    """The live regression: the gate passed instantly and waited for nothing.
+
+    `if client.is_connected:` on a coroutine is ALWAYS true, so await_ready
+    returned on its first poll every time. PairPhone then fired on an unready
+    client and the only trace was a RuntimeWarning in the journal. Neither the
+    `-> bool` annotation nor the docstring could be trusted; the value has to be
+    inspected.
+    """
+    rt = _rt(tmp_path)
+    client = _AsyncPropClient(ready_after=3)
+
+    asyncio.run(wa.await_ready(rt, 2, client, timeout_s=5.0))
+
+    assert client.checks >= 3, (
+        "await_ready returned without waiting — it accepted a truthy coroutine"
+    )
+
+
+def test_a_coroutine_that_stays_false_still_times_out(tmp_path):
+    """...and awaiting must not turn 'never ready' into 'instantly ready'."""
+    rt = _rt(tmp_path)
+    never = _AsyncPropClient(ready_after=10_000)
+
+    with pytest.raises(wa.WhatsAppLinkError, match="did not connect"):
+        asyncio.run(wa.await_ready(rt, 2, never, timeout_s=0.6))
+
+
+def test_readiness_still_works_on_a_plain_bool_client(tmp_path):
+    """The sync client returns a real bool; both shapes must work."""
+    rt = _rt(tmp_path)
+
+    class _Bool:
+        checks = 0
+
+        @property
+        def is_connected(self):
+            type(self).checks += 1
+            return type(self).checks >= 2
+
+    asyncio.run(wa.await_ready(rt, 2, _Bool(), timeout_s=5.0))
+
+
+def test_no_coroutine_is_left_unawaited(tmp_path, recwarn):
+    """The only symptom this bug ever produced was a RuntimeWarning.
+
+    Asserting its absence is what makes the fix observable — the behaviour it
+    broke (waiting) is otherwise invisible from outside.
+    """
+    rt = _rt(tmp_path)
+    asyncio.run(wa.await_ready(rt, 2, _AsyncPropClient(ready_after=2), timeout_s=5.0))
+    unawaited = [w for w in recwarn
+                 if issubclass(w.category, RuntimeWarning)
+                 and "never awaited" in str(w.message)]
+    assert unawaited == []
+
+
+# --- one pairing at a time per tenant ----------------------------------------
+
+def test_a_second_link_while_one_is_in_flight_is_refused(tmp_path):
+    """Two clients initialising the same session.db is the v0->v14 failure.
+
+    Live, an impatient second tap produced two _connect_and_check tasks failing
+    together with "failed to run upgrade v0->v14: attempt to write a readonly
+    database" — concurrent schema creation on one file. Refusing beats queuing:
+    a queued attempt would hand the user a code from a session the next attempt
+    is about to destroy.
+    """
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow(_rt, _tid, _digits):
+        started.set()
+        await release.wait()
+        return _FAKE_PAIR_CODE
+
+    wa.request_pair_code = _slow
+
+    async def _run():
+        first = asyncio.create_task(
+            wa.start_link(rt, b_id, consent_acknowledged=True, phone="+972555000002"))
+        await started.wait()                      # first is mid-flight
+        with pytest.raises(wa.WhatsAppLinkError, match="already in progress"):
+            await wa.start_link(rt, b_id, consent_acknowledged=True,
+                                phone="+972555000002")
+        release.set()
+        return await first
+
+    out = asyncio.run(_run())
+    assert out["pair_code"] == _FAKE_PAIR_CODE
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "wa_link_already_in_progress" in actions
+
+
+def test_the_lock_is_released_so_a_later_retry_still_works(tmp_path):
+    """A refusal must not wedge the tenant out of ever pairing again."""
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+
+    first = _start(rt, b_id, consent_acknowledged=True, phone="+972555000002")
+    second = _start(rt, b_id, consent_acknowledged=True, phone="+972555000002")
+    assert first["status"] == second["status"] == "awaiting_code"
+
+
+def test_two_tenants_pair_independently(tmp_path):
+    """The lock is per tenant — one user linking must not block another."""
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    c_id = _new_tenant(rt, "c@example.com")
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow(_rt, tid, _digits):
+        if tid == b_id:
+            started.set()
+            await release.wait()
+        return _FAKE_PAIR_CODE
+
+    wa.request_pair_code = _slow
+
+    async def _run():
+        first = asyncio.create_task(
+            wa.start_link(rt, b_id, consent_acknowledged=True, phone="+972555000002"))
+        await started.wait()
+        # c must not be blocked by b's in-flight pairing
+        out_c = await wa.start_link(rt, c_id, consent_acknowledged=True,
+                                    phone="+14155550123")
+        release.set()
+        await first
+        return out_c
+
+    assert asyncio.run(_run())["status"] == "awaiting_code"

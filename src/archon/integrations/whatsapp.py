@@ -190,6 +190,24 @@ def wipe_session(rt: Any, tenant_id: int) -> None:
     repo.whatsapp_link_store_session(TenantScope(rt.db, tenant_id), None)
 
 
+#: One in-flight pairing per tenant. The SessionRegistry's lock only spans
+#: ``get()``, which is not enough: a second ``/link`` can evict and rebuild
+#: between the first one's build and its PairPhone, so two whatsmeow clients end
+#: up initialising the SAME session.db. Seen live as two `_connect_and_check`
+#: tasks failing together with "failed to run upgrade v0->v14: attempt to write
+#: a readonly database" — concurrent schema creation on one file.
+_link_locks: dict[int, Any] = {}
+
+
+def _link_lock(tenant_id: int):
+    import asyncio
+
+    lock = _link_locks.get(tenant_id)
+    if lock is None:
+        lock = _link_locks[tenant_id] = asyncio.Lock()
+    return lock
+
+
 async def reset_session(rt: Any, tenant_id: int) -> None:
     """Close the live client, THEN remove its files. Order is the whole point.
 
@@ -339,6 +357,28 @@ async def start_link(rt: Any, tenant_id: int, *, consent_acknowledged: bool,
         )
     digits = normalise_phone(phone)
 
+    # REFUSE a concurrent attempt rather than queue it. An impatient second tap
+    # used to evict and rebuild between the first attempt's build and its
+    # PairPhone, leaving two whatsmeow clients initialising the SAME session.db
+    # — live, that was two _connect_and_check tasks failing together with
+    # "failed to run upgrade v0->v14: attempt to write a readonly database".
+    # Queuing would only postpone the collision and hand the user a code from a
+    # session the next attempt is about to destroy; telling them to wait is both
+    # safer and truer.
+    lock = _link_lock(tenant_id)
+    if lock.locked():
+        rt.audit.note("wa_link_already_in_progress", tenant_id=tenant_id)
+        raise WhatsAppLinkError(
+            "a pairing is already in progress for this account — wait for the "
+            "code to appear, or try again in a moment"
+        )
+
+    async with lock:
+        return await _start_link_locked(rt, tenant_id, digits)
+
+
+async def _start_link_locked(rt: Any, tenant_id: int, digits: str) -> dict[str, Any]:
+    """The body of :func:`start_link`, holding the per-tenant pairing lock."""
     scope = TenantScope(rt.db, tenant_id)
     # Close the previous client BEFORE deleting its files — see reset_session.
     # These two ran the other way round and produced the live DBMOVED failure:
@@ -634,6 +674,34 @@ READY_TIMEOUT_S = 25.0
 _READY_POLL_S = 0.25
 
 
+async def _is_connected(client: Any) -> bool:
+    """Whether the socket is really up — awaiting the answer if it is awaitable.
+
+    A TRAP WORTH SPELLING OUT, because it silently disabled the readiness wait
+    entirely. neonize's ``is_connected`` is a plain ``@property`` annotated
+    ``-> bool`` and documented as returning a bool. In the ASYNC client it is
+    not one: ``self.__client`` is ``async_gocode``, so the property body
+
+        return self.__client.IsConnected(self.uuid)
+
+    hands back an unawaited **coroutine object** — which is always truthy. So
+    ``if client.is_connected:`` succeeded on the very first poll, every time,
+    and ``await_ready`` returned instantly without waiting for anything. The
+    only visible trace was a ``RuntimeWarning: coroutine ... never awaited`` in
+    the journal.
+
+    Neither the annotation nor the docstring can be trusted here, so the value
+    is inspected instead: awaited when awaitable, used directly when the sync
+    client returns a real bool.
+    """
+    import inspect
+
+    value = client.is_connected
+    if inspect.isawaitable(value):
+        value = await value
+    return bool(value)
+
+
 async def await_ready(rt: Any, tenant_id: int, client: Any,
                       timeout_s: float = READY_TIMEOUT_S) -> None:
     """Block until whatsmeow reports the socket is actually up.
@@ -667,7 +735,7 @@ async def await_ready(rt: Any, tenant_id: int, client: Any,
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
-            if client.is_connected:
+            if await _is_connected(client):
                 return
         except Exception:  # noqa: BLE001
             # The Go client may not exist yet, in which case the bridge call
