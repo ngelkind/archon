@@ -300,7 +300,7 @@ def test_a_ban_is_recorded_distinctly_from_a_logout(tmp_path):
     b_id = _new_tenant(rt, "b@example.com")
     _linked(rt, b_id)
 
-    wa.record_logged_out(rt, b_id, banned=True)
+    asyncio.run(wa.record_logged_out(rt, b_id, banned=True))
     assert wa.status(rt, TenantScope(rt.db, b_id))["status"] == "banned"
     assert not wa.session_path(rt, b_id).exists()
     actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
@@ -1015,3 +1015,141 @@ def test_phonenumbers_is_a_declared_dependency():
 
     pyproject = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
     assert "phonenumbers" in pyproject
+
+
+# --- SQLITE_READONLY_DBMOVED: deleting session.db under a live client --------
+
+def test_reset_closes_the_client_before_deleting_its_files(tmp_path):
+    """The live corruption, in order form.
+
+    whatsmeow opened session.db, a retried /link deleted and recreated it, and
+    the next device-store write went to the orphaned inode —
+    SQLITE_READONLY_DBMOVED, surfacing as "attempt to write a readonly
+    database" AFTER WhatsApp had already accepted the pairing code. The two
+    calls look equally reasonable in either order at the call site, so the
+    order is asserted rather than trusted.
+    """
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    order: list[str] = []
+
+    async def _evict(tenant_id, kind=None):
+        order.append("evict")
+        return 1
+
+    rt.sessions.evict = _evict
+    real_wipe = wa.wipe_session
+
+    def _wipe(rt_, tid):
+        order.append("wipe")
+        return real_wipe(rt_, tid)
+
+    wa.wipe_session = _wipe
+    try:
+        asyncio.run(wa.reset_session(rt, b_id))
+    finally:
+        wa.wipe_session = real_wipe
+
+    assert order == ["evict", "wipe"], order
+
+
+def test_start_link_resets_through_the_safe_helper(tmp_path):
+    """A retried /link must not stomp the previous attempt's open file.
+
+    Pinned by source because the failure is invisible in-process: the delete
+    succeeds, the recreate succeeds, and only whatsmeow's next write fails —
+    minutes later, inside the Go library, after the user has already typed the
+    code.
+    """
+    import inspect
+
+    src = inspect.getsource(wa.start_link)
+    assert "reset_session(" in src
+    # the unsafe pairing must not reappear at this call site
+    assert "wipe_session(" not in src
+
+
+def test_wiping_under_a_live_client_is_audited(tmp_path):
+    """A tripwire for the next caller who gets the order wrong.
+
+    It cannot prevent the corruption, but it turns a silent one into a named
+    row — the difference between ten minutes of diagnosis and two hours of
+    reading /proc/<pid>/fd.
+    """
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    rt.sessions.peek = lambda tenant_id, kind: object()   # pretend one is live
+
+    wa.wipe_session(rt, b_id)
+
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "wa_wipe_under_live_client" in actions
+
+
+def test_logout_and_unlink_also_close_before_wiping(tmp_path):
+    """Same hazard, two other paths that used to wipe directly."""
+    import inspect
+
+    for fn in (wa.record_logged_out, wa.unlink):
+        src = inspect.getsource(fn)
+        assert "reset_session(" in src, fn.__name__
+        assert "wipe_session(" not in src, fn.__name__
+
+
+def test_eviction_prefers_stop_over_disconnect(tmp_path):
+    """The other half of the corruption.
+
+    neonize's ``disconnect`` closes the websocket but leaves the Go client
+    alive still holding session.db open; only ``stop`` releases it. Evicting
+    with ``disconnect`` left the fd on a deleted inode, which is precisely how
+    the recreate turned into DBMOVED.
+    """
+    from archon.sessions import SessionRegistry
+
+    calls: list[str] = []
+
+    class _Client:
+        async def stop(self):
+            calls.append("stop")
+
+        async def disconnect(self):
+            calls.append("disconnect")
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    reg = SessionRegistry()
+    reg.register_factory("wa-test", lambda _rt, _tid: _Client())
+
+    asyncio.run(reg.get(rt, b_id, "wa-test"))
+    asyncio.run(reg.evict(b_id, "wa-test"))
+
+    assert calls == ["stop"], calls
+
+
+def test_the_client_is_shut_down_before_the_evict_hook_runs(tmp_path):
+    """The hook encrypts session.db back into the DB.
+
+    Running it while the client is still writing reads a file mid-flight — a
+    torn read stored as a corrupt session, which would then fail to decrypt or
+    fail to log in on the next use.
+    """
+    from archon.sessions import SessionRegistry
+
+    order: list[str] = []
+
+    class _Client:
+        async def stop(self):
+            order.append("stop")
+
+    def _hook(_rt, _tenant_id):
+        order.append("hook")
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    reg = SessionRegistry()
+    reg.register_factory("wa-test", lambda _rt, _tid: _Client(), on_evict=_hook)
+
+    asyncio.run(reg.get(rt, b_id, "wa-test"))
+    asyncio.run(reg.evict(b_id, "wa-test"))
+
+    assert order == ["stop", "hook"], order

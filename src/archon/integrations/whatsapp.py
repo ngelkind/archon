@@ -159,7 +159,28 @@ def _shred(path: Path) -> None:
 
 
 def wipe_session(rt: Any, tenant_id: int) -> None:
-    """Remove every trace of a tenant's session, on disk and in the database."""
+    """Remove every trace of a tenant's session, on disk and in the database.
+
+    MUST NOT run while a client holds the file open — use :func:`reset_session`,
+    which closes first. Deleting session.db under a live whatsmeow leaves its fd
+    pointing at an unlinked inode, and the next write fails with
+    SQLITE_READONLY_DBMOVED ("attempt to write a readonly database"). That
+    happened live, mid-pairing, after WhatsApp had already accepted the code.
+
+    The tripwire below cannot fix the caller, but it turns a silent corruption
+    into a named audit row, which is the difference between ten minutes and two
+    hours of diagnosis.
+    """
+    live = None
+    try:
+        live = rt.sessions.peek(tenant_id, PROVIDER)
+    except Exception:  # noqa: BLE001 — the tripwire must never break the wipe
+        pass
+    if live is not None:
+        rt.audit.note("wa_wipe_under_live_client", tenant_id=tenant_id,
+                      detail="session files deleted while a client held them open; "
+                             "evict first (see reset_session)")
+
     _shred(session_path(rt, tenant_id))
     directory = session_dir(rt, tenant_id)
     try:
@@ -167,6 +188,18 @@ def wipe_session(rt: Any, tenant_id: int) -> None:
     except OSError:  # pragma: no cover
         pass
     repo.whatsapp_link_store_session(TenantScope(rt.db, tenant_id), None)
+
+
+async def reset_session(rt: Any, tenant_id: int) -> None:
+    """Close the live client, THEN remove its files. Order is the whole point.
+
+    Every caller that wants a clean slate should use this rather than pairing
+    the two calls by hand: doing it the other way round is not a style
+    difference, it is the DBMOVED corruption above, and the two lines look
+    equally reasonable in either order at the call site.
+    """
+    await rt.sessions.evict(tenant_id, PROVIDER)
+    wipe_session(rt, tenant_id)
 
 
 # --- the deliberate difference from the owner's client ------------------------
@@ -307,8 +340,12 @@ async def start_link(rt: Any, tenant_id: int, *, consent_acknowledged: bool,
     digits = normalise_phone(phone)
 
     scope = TenantScope(rt.db, tenant_id)
-    wipe_session(rt, tenant_id)          # a fresh link never inherits a session
-    await rt.sessions.evict(tenant_id, PROVIDER)   # nor a live client
+    # Close the previous client BEFORE deleting its files — see reset_session.
+    # These two ran the other way round and produced the live DBMOVED failure:
+    # a retried /link deleted session.db while the first attempt's whatsmeow
+    # still had it open, so its device-store write went to an orphaned inode
+    # after WhatsApp had already accepted the code.
+    await reset_session(rt, tenant_id)
     repo.whatsapp_link_create(scope, consent_version=CONSENT_VERSION,
                               phone_e164=f"+{digits}")
     # Recorded separately from the row so the consent survives in the audit log
@@ -420,15 +457,19 @@ def record_pair_status(rt: Any, tenant_id: int, *, ok: bool,
     repo.whatsapp_link_clear_pair_code(scope)
 
 
-def record_logged_out(rt: Any, tenant_id: int, *, banned: bool = False) -> None:
+async def record_logged_out(rt: Any, tenant_id: int, *, banned: bool = False) -> None:
     """WhatsApp ended the session — logged out elsewhere, or banned.
 
     A ban is recorded distinctly because it is the outcome the user was warned
     about, and the app should say so plainly rather than showing "disconnected".
+
+    Async because it must close the client before removing its files: this used
+    to call ``wipe_session`` directly, which is the same delete-under-a-live-fd
+    that produced the DBMOVED corruption during pairing.
     """
     scope = TenantScope(rt.db, tenant_id)
     repo.whatsapp_link_set_status(scope, status="banned" if banned else "logged_out")
-    wipe_session(rt, tenant_id)
+    await reset_session(rt, tenant_id)
     rt.audit.note("wa_banned" if banned else "wa_logged_out", tenant_id=tenant_id)
 
 
@@ -471,9 +512,8 @@ def _row_get(row: Any, key: str) -> Any:
 
 async def unlink(rt: Any, tenant_id: int) -> bool:
     """Drop the live session and wipe the stored one."""
-    await rt.sessions.evict(tenant_id, PROVIDER)
     revoked = repo.whatsapp_link_revoke(TenantScope(rt.db, tenant_id))
-    wipe_session(rt, tenant_id)
+    await reset_session(rt, tenant_id)          # close first, then remove
     if revoked:
         rt.audit.note("wa_unlinked", tenant_id=tenant_id)
     return revoked
@@ -539,7 +579,7 @@ def wire_events(rt: Any, tenant_id: int, client: Any) -> None:
     @client.event(LoggedOutEv)
     async def _on_logged_out(_c: Any, _ev: Any) -> None:
         try:
-            record_logged_out(rt, tenant_id)
+            await record_logged_out(rt, tenant_id)
         except Exception as exc:  # noqa: BLE001
             _note("wa_tenant_logout_failed", error=repr(exc)[:200])
 
@@ -548,7 +588,7 @@ def wire_events(rt: Any, tenant_id: int, client: Any) -> None:
         # The outcome the consent warning names. Recorded distinctly so the app
         # can say "banned" rather than "disconnected".
         try:
-            record_logged_out(rt, tenant_id, banned=True)
+            await record_logged_out(rt, tenant_id, banned=True)
             _note("wa_tenant_temporary_ban", detail=str(ev)[:200])
         except Exception as exc:  # noqa: BLE001
             _note("wa_tenant_ban_record_failed", error=repr(exc)[:200])

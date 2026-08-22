@@ -172,7 +172,36 @@ class SessionRegistry:
 
     async def _close(self, session: Session) -> None:
         """Best-effort close. A client that cannot be closed must not block
-        eviction — the alternative is leaking a live session forever."""
+        eviction — the alternative is leaking a live session forever.
+
+        SHUT THE CLIENT DOWN FIRST, THEN RUN THE HOOK. The hook's job is
+        post-eviction work on the session's files (WhatsApp encrypts its
+        session.db back into the database), and doing that while the client is
+        still running reads a file being written underneath it — a torn read
+        that would be stored as a corrupt session.
+
+        ``stop`` is preferred over ``disconnect`` because they are not the same
+        thing: neonize's ``disconnect`` closes the websocket but leaves the Go
+        client alive, still holding its SQLite handle open. Only ``stop``
+        releases it. Evicting with ``disconnect`` left an fd on a session.db
+        that was then deleted and recreated, and whatsmeow's next write went to
+        the orphaned inode — SQLITE_READONLY_DBMOVED, seen live as "attempt to
+        write a readonly database" mid-pairing. Telethon has no ``stop`` and
+        falls through to ``disconnect``, which for it is the full teardown.
+        """
+        closer = (
+            getattr(session.client, "stop", None)
+            or getattr(session.client, "close", None)
+            or getattr(session.client, "disconnect", None)
+        )
+        if closer is not None:
+            try:
+                result = closer()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:  # noqa: BLE001 — eviction is best-effort by design
+                pass
+
         hook = self._on_evict.get(session.kind)
         if hook is not None and self._rt is not None:
             try:
@@ -181,17 +210,6 @@ class SessionRegistry:
                     await result
             except Exception:  # noqa: BLE001 — a failed hook must not leak the session
                 pass
-        closer = getattr(session.client, "close", None) or getattr(
-            session.client, "disconnect", None
-        )
-        if closer is None:
-            return
-        try:
-            result = closer()
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception:  # noqa: BLE001 — eviction is best-effort by design
-            pass
 
     # --- introspection -------------------------------------------------------
 
