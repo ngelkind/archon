@@ -910,3 +910,41 @@ def test_a_bare_00_is_still_refused():
     for bad in ("00", "0000", "00 - -"):
         with pytest.raises(wa.PhoneRequired):
             wa.normalise_phone(bad)
+
+
+@pytest.mark.parametrize("national", [
+    "0501234567",        # an Israeli mobile as an Israeli writes it — 10 digits
+    "05012345678",
+    "0972501234567",     # country code with a stray leading 0
+    "000972501234567",   # 00 prefix then a national number
+])
+def test_a_national_number_is_refused_with_a_usable_hint(national):
+    """The gap the length check could never close.
+
+    An earlier version leaned on the 8-digit floor to catch "a local number
+    missing its country code" — but that only caught locals short enough to
+    trip it. An Israeli mobile is ten digits, comfortably inside 8-15, so it
+    passed validation and reached whatsmeow as a bogus number: a plausible
+    wrong answer instead of an actionable rejection. Length cannot tell a
+    national number from an international one. The leading zero can, because no
+    E.164 country code starts with one.
+    """
+    with pytest.raises(wa.PhoneRequired, match="national number"):
+        wa.normalise_phone(national)
+
+
+def test_the_hint_tells_the_user_what_to_actually_do():
+    """A rejection the user cannot act on is barely better than a wrong number."""
+    with pytest.raises(wa.PhoneRequired) as exc:
+        wa.normalise_phone("0501234567")
+    msg = str(exc.value)
+    assert "leading 0" in msg and "country code" in msg
+    assert "+972501234567" in msg          # a worked example, not just a rule
+
+
+def test_valid_international_numbers_still_pass():
+    """The guard must not start rejecting the numbers it exists to accept."""
+    assert wa.normalise_phone("+972501234567") == "972501234567"
+    assert wa.normalise_phone("00972501234567") == "972501234567"
+    assert wa.normalise_phone("+1 415 555 0123") == "14155550123"
+    assert wa.normalise_phone("+44 20 7946 0958") == "442079460958"

@@ -210,21 +210,35 @@ def normalise_phone(raw: str | None) -> str:
             "account to link, in international format (e.g. +972501234567)"
         )
     digits = "".join(ch for ch in str(raw) if ch.isdigit())
+
     # A leading 00 is the international prefix written the other common way —
     # much of the world, Israel included, writes 00972… where E.164 writes
-    # +972…. Unambiguous to detect, because no country code starts with 0.
-    # Worth handling rather than rejecting: stripping only the '+' would leave
-    # 00972… looking like a VALID 14-digit number, so it would sail past the
-    # length check and fail at WhatsApp with an opaque error instead of a
-    # message the user could act on. A silent wrong number beats no number only
-    # from the code's point of view, never from the user's.
+    # +972…. Convert rather than reject: it is unambiguous, because no country
+    # code begins with 0.
     if digits.startswith("00"):
         digits = digits[2:]
     if not digits:
         raise PhoneRequired(f"{raw!r} contains no digits to dial")
-    # E.164 allows at most 15 digits; below 8 is not a reachable international
-    # number and is almost always a local number missing its country code —
-    # worth catching here, because whatsmeow's failure for it is opaque.
+
+    # THE DISCRIMINATOR IS THE LEADING ZERO, NOT THE LENGTH. An earlier version
+    # relied on the 8-digit floor to catch "a local number missing its country
+    # code", which only ever caught locals that happened to be SHORT. An
+    # Israeli mobile is 0501234567 — ten digits, comfortably inside 8-15 — so
+    # it passed validation and reached whatsmeow as a bogus number, failing
+    # with an error the user could not act on. Length cannot separate a
+    # national number from an international one; the leading 0 can, because
+    # E.164 country codes never start with one. (Found by android-app, who hit
+    # the same class twice before this.)
+    if digits.startswith("0"):
+        raise PhoneRequired(
+            f"{raw!r} looks like a national number. Drop the leading 0 and add "
+            "your country code — e.g. 0501234567 in Israel becomes "
+            "+972501234567."
+        )
+
+    # E.164 allows at most 15 digits. The floor stays because a number this
+    # short cannot be dialled internationally, but it is a sanity bound now
+    # rather than the country-code check it was mistaken for.
     if not 8 <= len(digits) <= 15:
         raise PhoneRequired(
             f"{raw!r} is not a valid international number: expected 8-15 "
