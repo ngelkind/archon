@@ -490,3 +490,150 @@ def test_business_bot_integration_is_untouched(tmp_path):
     b_id = _new_tenant(rt, "b@example.com")
     start = tg_business.start_link(rt, b_id)
     assert start["deep_link"].startswith("https://t.me/ArchonProductBot")
+
+
+# --- per-tenant inbound wiring -----------------------------------------------
+
+class _FakeTelethon:
+    """Captures the handler ``wire_events`` registers via ``@client.on(...)``."""
+
+    def __init__(self) -> None:
+        self.handler = None
+        self.sent: list[tuple] = []
+
+    def on(self, _event_spec):
+        def deco(fn):
+            self.handler = fn
+            return fn
+        return deco
+
+    async def send_message(self, peer, text):
+        self.sent.append((peer, text))
+        return type("Msg", (), {"id": len(self.sent)})()
+
+
+class _Event:
+    """The slice of a Telethon NewMessage event that the wiring reads."""
+
+    def __init__(self, *, chat_id=-1001234, text="hi", private=False,
+                 broadcast=False, out=False, msg_id=7):
+        from datetime import UTC, datetime
+
+        self.chat_id = chat_id
+        self.is_private = private
+        self.sender_id = 555
+        self.sender = type("U", (), {"first_name": "Dana", "last_name": None,
+                                     "title": None, "username": "dana"})()
+        self.message = type("M", (), {
+            "id": msg_id, "message": text, "date": datetime.now(UTC), "out": out,
+        })()
+        self._chat = type("C", (), {"title": "Family", "broadcast": broadcast,
+                                    "first_name": None, "last_name": None,
+                                    "username": None})()
+
+    async def get_chat(self):
+        return self._chat
+
+
+def _publish_capture(rt):
+    published = []
+
+    class _Bus:
+        async def publish(self, msg):
+            published.append(msg)
+
+    rt.bus = _Bus()
+    return published
+
+
+def test_userbot_inbound_is_stamped_with_the_owning_tenant(tmp_path):
+    """The leak guard: InboundMessage.tenant_id defaults to the OWNER.
+
+    A missing stamp would not raise — it would file a stranger's Telegram into
+    the owner's chats, memory and agent context.
+    """
+    import asyncio
+
+    from archon.db.tenancy import OWNER_TENANT_ID
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    published = _publish_capture(rt)
+
+    client = _FakeTelethon()
+    ub.wire_events(rt, b_id, client)
+    asyncio.run(client.handler(_Event(text="hello")))
+
+    assert len(published) == 1
+    assert published[0].tenant_id == b_id
+    assert published[0].tenant_id != OWNER_TENANT_ID
+    assert published[0].text == "hello"
+    assert published[0].platform == "tg" and published[0].source == "userbot"
+
+
+def test_private_chats_are_kept_for_tenants(tmp_path):
+    """The owner drops private chats because their Business bot covers them.
+
+    A product tenant has no Business bot, so dropping private chats would throw
+    away the main case rather than a duplicate.
+    """
+    import asyncio
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    published = _publish_capture(rt)
+
+    client = _FakeTelethon()
+    ub.wire_events(rt, b_id, client)
+    asyncio.run(client.handler(_Event(private=True, chat_id=555, text="dm")))
+
+    assert len(published) == 1
+    assert published[0].chat_kind == "private"
+
+
+def test_channels_and_groups_are_distinguished(tmp_path):
+    import asyncio
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    published = _publish_capture(rt)
+
+    client = _FakeTelethon()
+    ub.wire_events(rt, b_id, client)
+    asyncio.run(client.handler(_Event(broadcast=True)))
+    asyncio.run(client.handler(_Event(broadcast=False)))
+
+    assert [m.chat_kind for m in published] == ["channel", "group"]
+
+
+def test_a_bad_event_never_reaches_telethons_dispatcher(tmp_path):
+    """One malformed message must cost a message, not the connection."""
+    import asyncio
+
+    rt = _rt(tmp_path)
+    b_id = _new_tenant(rt, "b@example.com")
+    _publish_capture(rt)
+
+    class _Broken(_Event):
+        async def get_chat(self):
+            raise ValueError("no chat")
+
+    client = _FakeTelethon()
+    ub.wire_events(rt, b_id, client)
+    asyncio.run(client.handler(_Broken()))          # must not raise
+
+    actions = [r["action"] for r in rt.db.query("SELECT action FROM audit")]
+    assert "tg_userbot_inbound_failed" in actions
+
+
+def test_the_handler_is_registered_before_connecting(tmp_path):
+    """Telethon dispatches as soon as the connection is up.
+
+    Registering after connect() races the first messages and silently drops
+    whatever lands in that window, which is exactly the kind of gap that only
+    shows up under real traffic.
+    """
+    import inspect
+
+    src = inspect.getsource(ub.build_client)
+    assert src.index("wire_events(") < src.index("await client.connect()")

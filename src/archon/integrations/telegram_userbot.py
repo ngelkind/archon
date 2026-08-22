@@ -36,11 +36,13 @@ per-tenant rate limits) and it is flagged for the capacity conversation.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from ..crypto import CredentialCryptoError, decrypt, encrypt
 from ..db import repo
 from ..db.tenancy import TenantScope
+from ..models import InboundMessage
 
 PROVIDER = "telegram_userbot"
 
@@ -320,8 +322,68 @@ async def build_client(rt: Any, tenant_id: int):
             f"tenant {tenant_id} has no linked Telegram account"
         )
     client = _new_client(rt, session)
+    # Wired BEFORE connecting: Telethon starts dispatching as soon as the
+    # connection is up, so registering afterwards races the first messages and
+    # would silently drop whatever arrives in that window.
+    wire_events(rt, tenant_id, client)
     await client.connect()
     return client
+
+
+def wire_events(rt: Any, tenant_id: int, client: Any) -> None:
+    """Subscribe a tenant's userbot to inbound messages.
+
+    The owner's equivalent is ``platforms/telegram/userbot.py``. Two deliberate
+    differences:
+
+    * every message is stamped with ``tenant_id``. ``InboundMessage`` defaults
+      that field to the OWNER, so a missing stamp does not fail — it files a
+      stranger's Telegram into the owner's chats and agent context. That is the
+      leak, and it is why the field is set explicitly rather than left to a
+      default.
+    * PRIVATE chats are kept. The owner's userbot drops them because their
+      Business bot already covers private 1:1; a product tenant has no Business
+      bot, so private chats are the main case rather than a duplicate.
+
+    Handlers never raise into Telethon's dispatcher — one malformed message
+    must not tear down the tenant's connection.
+    """
+    from telethon import events
+
+    # Shared with the owner's userbot on purpose: chat-id normalisation decides
+    # which row a message lands in, so if the two paths ever disagreed the same
+    # chat would split in two. One implementation, not two that drift.
+    from ..platforms.telegram.userbot import _display_name, _norm_chat_id
+
+    @client.on(events.NewMessage())
+    async def _on_new(event: Any) -> None:
+        try:
+            msg = event.message
+            chat = await event.get_chat()
+            if event.is_private:
+                chat_kind = "private"
+            elif getattr(chat, "broadcast", False):
+                chat_kind = "channel"
+            else:
+                chat_kind = "group"
+            sender = getattr(event, "sender", None)
+            await rt.bus.publish(InboundMessage(
+                platform="tg",
+                source="userbot",
+                tenant_id=tenant_id,
+                chat_id=_norm_chat_id(event.chat_id),
+                chat_kind=chat_kind,
+                chat_name=_display_name(chat) if chat else None,
+                msg_id=str(msg.id),
+                sender_id=str(getattr(event, "sender_id", "") or "unknown"),
+                sender_name=_display_name(sender) if sender else None,
+                ts=msg.date or datetime.now(UTC),
+                is_from_me=bool(getattr(msg, "out", False)),
+                text=msg.message or None,
+            ))
+        except Exception as exc:  # noqa: BLE001 — must not kill the session
+            rt.audit.note("tg_userbot_inbound_failed", tenant_id=tenant_id,
+                          error=repr(exc)[:200])
 
 
 async def send_message(rt: Any, tenant_id: int, peer: str, text: str) -> dict[str, Any]:
