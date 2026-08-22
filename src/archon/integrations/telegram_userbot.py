@@ -324,5 +324,38 @@ async def build_client(rt: Any, tenant_id: int):
     return client
 
 
+async def send_message(rt: Any, tenant_id: int, peer: str, text: str) -> dict[str, Any]:
+    """Send as this tenant's own Telegram account, under the outbound budgets.
+
+    The pacing is not decoration. Every tenant's userbot rides one shared
+    ``TELEGRAM_API_ID``, Telegram flags at that level, and "flooding, spamming,
+    faking counters" is documented as a forever-ban — so an unpaced send path
+    is the single most likely way to lose EVERY tenant's account at once. See
+    ``pacing.py``; the global budget is the guard that matters.
+
+    Budget first, gap second: a refusal should be instant rather than arriving
+    after a pointless sleep. Refusals raise :class:`~archon.pacing.PaceRefused`
+    so a caller can report the wait instead of stalling silently.
+
+    UNVALIDATED AGAINST A LIVE ACCOUNT (task #12). The budget logic is covered
+    by ``tests/test_pacing.py``; the Telethon call below is not, and mocking it
+    would only assert what this code already believes. It needs one real
+    throwaway account before anyone should call it proven.
+    """
+    from ..pacing import pacer_for
+
+    pacer = pacer_for(rt)
+    pacer.acquire(tenant_id, str(peer))
+    await pacer.gap()
+
+    client = await rt.sessions.get(rt, tenant_id, PROVIDER)
+    sent = await client.send_message(peer, text)
+    # No message text in the audit log: this table is shared across tenants and
+    # the content belongs to third parties (see Settings.store_audit_content).
+    rt.audit.note("tg_userbot_sent", tenant_id=tenant_id,
+                  peer=str(peer), chars=len(text))
+    return {"ok": True, "message_id": getattr(sent, "id", None)}
+
+
 def register(rt: Any) -> None:
     rt.sessions.register_factory(PROVIDER, build_client)

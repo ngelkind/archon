@@ -21,52 +21,18 @@ as a Postgres/Redis trigger rather than pretended away here.
 
 from __future__ import annotations
 
-import time
-from collections import defaultdict, deque
-
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-_WINDOW_S = 60.0
+# Shared with the outbound pacer (``archon.pacing``), which needs the same
+# counter but must not import a web framework to get it. Re-exported here so
+# `from archon.api.ratelimit import SlidingWindow` keeps working.
+from ..util.window import SlidingWindow
+
+__all__ = ["AUTH_PATHS", "RateLimiter", "SlidingWindow", "install"]
 
 #: Paths where credentials are presented; guessed cheaply if left unlimited.
 AUTH_PATHS = ("/auth/signup", "/auth/login", "/auth/refresh", "/pair")
-
-
-class SlidingWindow:
-    """Per-key hit timestamps within the trailing window."""
-
-    def __init__(self, window_s: float = _WINDOW_S) -> None:
-        self.window_s = window_s
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
-
-    def hit(self, key: str, limit: int, now: float | None = None) -> bool:
-        """Record a hit; return True when it is allowed. ``limit`` 0 disables."""
-        if limit <= 0:
-            return True
-        now = now if now is not None else time.monotonic()
-        bucket = self._hits[key]
-        cutoff = now - self.window_s
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False
-        bucket.append(now)
-        return True
-
-    def retry_after(self, key: str, now: float | None = None) -> int:
-        bucket = self._hits.get(key)
-        if not bucket:
-            return 1
-        now = now if now is not None else time.monotonic()
-        return max(1, int(self.window_s - (now - bucket[0])) + 1)
-
-    def prune(self, now: float | None = None) -> None:
-        """Drop empty buckets so keys from one-off IPs are not kept forever."""
-        now = now if now is not None else time.monotonic()
-        cutoff = now - self.window_s
-        for key in [k for k, b in self._hits.items() if not b or b[-1] < cutoff]:
-            self._hits.pop(key, None)
 
 
 class RateLimiter:

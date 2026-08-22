@@ -45,6 +45,11 @@ class Runtime:
     owner_text_handler: object | None = None
     # Platform clients, set by their subsystems when connected (M3+).
     clients: dict[str, object] = field(default_factory=dict)
+    # Outbound send budgets for per-tenant userbots (pacing.OutboundPacer).
+    # Process-wide by necessity: the per-tenant limits are the smaller half, and
+    # the GLOBAL one is what protects the shared Telegram api_id. Built lazily
+    # by pacing.pacer_for; typed as Any to avoid a circular import.
+    pacer: object | None = None
 
     def uptime_s(self) -> int:
         return int(time.time() - self.started_at)

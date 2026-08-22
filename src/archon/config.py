@@ -45,6 +45,27 @@ class Settings(BaseSettings):
     telegram_api_hash: str | None = None
     telethon_session: str | None = None  # StringSession — OWNER ONLY
 
+    # --- Userbot outbound pacing (see pacing.py) ---
+    # Ban-avoidance budgets for per-tenant userbot sends. The GLOBAL pair is the
+    # one that protects the shared TELEGRAM_API_ID: Telegram flags at the api_id
+    # level, so N tenants each within their own per-tenant budget still present
+    # N times that volume to one app. Deliberately conservative — a userbot
+    # answering one person's chats needs very little throughput, and the cost of
+    # being wrong is every tenant banned at once. 0 disables a dimension.
+    userbot_sends_per_min_per_tenant: int = 8
+    userbot_sends_per_hour_per_tenant: int = 60
+    userbot_sends_per_min_global: int = 20
+    userbot_sends_per_hour_global: int = 240
+    userbot_sends_per_min_per_peer: int = 5
+    # Breadth, not volume: contacting many NEW chats in an hour is the
+    # bulk/broadcast signature Telegram documents as ban-worthy, and it reads as
+    # spam even at a low message rate.
+    userbot_new_peers_per_hour_per_tenant: int = 10
+    # Randomised gap slept before every send, so replies look like typing.
+    # Never refuses — the budgets above are the guard, this is the texture.
+    userbot_send_gap_s_min: float = 2.0
+    userbot_send_gap_s_max: float = 6.0
+
     # --- LLM provider keys (only the active provider's key must be present) ---
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
