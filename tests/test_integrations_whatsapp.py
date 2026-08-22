@@ -948,3 +948,70 @@ def test_valid_international_numbers_still_pass():
     assert wa.normalise_phone("00972501234567") == "972501234567"
     assert wa.normalise_phone("+1 415 555 0123") == "14155550123"
     assert wa.normalise_phone("+44 20 7946 0958") == "442079460958"
+
+
+# --- parsing is delegated, not hand-rolled -----------------------------------
+
+def test_the_users_real_number_survives_normalisation():
+    """The number about to be paired live. Regression floor for any change here.
+
+    Pinned because a stricter validator is exactly the kind of "improvement"
+    that would silently lock out the one account we know matters.
+    """
+    assert wa.normalise_phone("+972555000002") == "972555000002"
+    assert wa.normalise_phone("00972555000002") == "972555000002"
+    assert wa.normalise_phone("972555000002") == "972555000002"
+    assert wa.normalise_phone("+972 55 245 2100") == "972555000002"
+
+
+def test_well_formed_numbers_in_unassigned_ranges_are_accepted():
+    """Deliberately NOT is_valid_number, and this is the reason.
+
+    libphonenumber's carrier-allocation tables lag real allocations: all three
+    of these are perfectly well-formed and all three fail is_valid_number. The
+    failure modes are not symmetric — a bogus number costs one retry that
+    WhatsApp itself rejects, while a wrongly-rejected real number locks that
+    user out of linking entirely, with no workaround. So structure is checked,
+    not carrier assignment.
+    """
+    for number in ("+972501234567", "+972521234567", "+35812345678"):
+        assert wa.normalise_phone(number) == number.lstrip("+").replace(" ", "")
+
+
+def test_structurally_impossible_numbers_are_still_refused():
+    """is_possible_number is lenient about assignment, not about shape."""
+    for bad in ("12345", "+1", "+123"):
+        with pytest.raises(wa.PhoneRequired):
+            wa.normalise_phone(bad)
+
+
+def test_parsing_is_delegated_to_phonenumbers():
+    """Guards against sliding back into hand-rolled strip rules.
+
+    The hand-rolled version grew one rule per bug report — '+', then '00', then
+    a leading '0' — each added only after a user had already hit it. Delegating
+    rejects the whole class, including variants nobody has reported yet.
+    """
+    import inspect
+
+    src = inspect.getsource(wa.normalise_phone)
+    assert "phonenumbers.parse" in src
+    assert "phonenumbers.is_possible_number" in src
+    # The strict check would lock out real users (see the test above). Asserted
+    # on the CALL, not the text: the docstring names is_valid_number precisely
+    # to explain why it is not used, and a bare substring check cannot tell
+    # prose from code.
+    assert "phonenumbers.is_valid_number(" not in src
+
+
+def test_phonenumbers_is_a_declared_dependency():
+    """It arrives transitively via neonize, which is not a guarantee.
+
+    A neonize release that dropped it would break linking with an ImportError
+    at the worst possible moment, so it is declared directly — same reasoning
+    as cryptography via google-auth.
+    """
+    import pathlib
+
+    pyproject = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "phonenumbers" in pyproject

@@ -199,52 +199,83 @@ PAIR_CODE_TTL_S = 180
 def normalise_phone(raw: str | None) -> str:
     """E.164 (or close enough) -> the bare digits whatsmeow wants.
 
-    The API takes ``+972501234567`` because that is the standard and what the
-    app already holds; whatsmeow wants digits only. Owning that conversion here
-    means the platform quirk does not leak into every client — the app follows
-    one rule and the awkwardness stays on this side.
+    Parsed by ``phonenumbers`` (Google's libphonenumber) rather than by hand.
+    The hand-rolled version accumulated one strip rule per bug report — first
+    ``+``, then a leading ``00``, then a leading ``0`` — which is a losing game:
+    each rule only ever caught the variant that had already reached a user. A
+    real parser rejects the whole class, including the shapes nobody has thought
+    of yet.
+
+    WHY ``is_possible_number`` AND NOT ``is_valid_number`` — this is a
+    deliberate choice against the stricter-looking option, because the two
+    failure modes are not symmetric:
+
+    * accepting a bogus number costs one failed pairing attempt, which WhatsApp
+      itself rejects and the user simply retries;
+    * rejecting a REAL number blocks that user from linking at all, with no
+      workaround available to them.
+
+    ``is_valid_number`` checks the number against libphonenumber's carrier
+    allocation tables, which lag real allocations — measured here, it rejects
+    ``+972501234567``, ``+972521234567`` and ``+35812345678``, all perfectly
+    well-formed. A user handed a number in a newly-allocated range would be
+    permanently unable to link. ``is_possible_number`` checks structure and
+    length, which is what we actually need, and still rejects ``12345``.
+
+    Note ``parse`` alone kills the entire leading-zero class: ``0501234567``,
+    ``0972501234567`` and ``000972501234567`` all raise NumberParseException,
+    because no E.164 country code begins with 0.
     """
+    import phonenumbers
+
     if raw is None or not str(raw).strip():
         raise PhoneRequired(
             "linking by pairing code needs the phone number of the WhatsApp "
-            "account to link, in international format (e.g. +972501234567)"
+            "account to link, in international format (e.g. +972555000002)"
         )
-    digits = "".join(ch for ch in str(raw) if ch.isdigit())
 
+    cleaned = "".join(ch for ch in str(raw) if ch.isdigit() or ch == "+")
     # A leading 00 is the international prefix written the other common way —
-    # much of the world, Israel included, writes 00972… where E.164 writes
-    # +972…. Convert rather than reject: it is unambiguous, because no country
-    # code begins with 0.
-    if digits.startswith("00"):
-        digits = digits[2:]
-    if not digits:
+    # much of the world, Israel included, writes 00972… for +972…. Unambiguous,
+    # since no country code starts with 0.
+    if cleaned.startswith("00"):
+        cleaned = "+" + cleaned[2:]
+    if not cleaned.lstrip("+"):
         raise PhoneRequired(f"{raw!r} contains no digits to dial")
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
 
-    # THE DISCRIMINATOR IS THE LEADING ZERO, NOT THE LENGTH. An earlier version
-    # relied on the 8-digit floor to catch "a local number missing its country
-    # code", which only ever caught locals that happened to be SHORT. An
-    # Israeli mobile is 0501234567 — ten digits, comfortably inside 8-15 — so
-    # it passed validation and reached whatsmeow as a bogus number, failing
-    # with an error the user could not act on. Length cannot separate a
-    # national number from an international one; the leading 0 can, because
-    # E.164 country codes never start with one. (Found by android-app, who hit
-    # the same class twice before this.)
-    if digits.startswith("0"):
+    try:
+        parsed = phonenumbers.parse(cleaned, None)
+    except phonenumbers.NumberParseException as exc:
+        raise PhoneRequired(_phone_hint(raw, cleaned)) from exc
+
+    if not phonenumbers.is_possible_number(parsed):
         raise PhoneRequired(
+            f"{raw!r} is not a possible phone number — check the digits and "
+            "include your country code, e.g. +972555000002."
+        )
+    return phonenumbers.format_number(
+        parsed, phonenumbers.PhoneNumberFormat.E164).lstrip("+")
+
+
+def _phone_hint(raw: Any, cleaned: str) -> str:
+    """Say what to DO, not merely that the input was wrong.
+
+    A rejection the user cannot act on is barely better than the wrong number
+    it replaced — and the commonest mistake by far is typing a national number,
+    which deserves its own instruction rather than a generic parse failure.
+    """
+    if cleaned.startswith("+0"):
+        return (
             f"{raw!r} looks like a national number. Drop the leading 0 and add "
             "your country code — e.g. 0501234567 in Israel becomes "
             "+972501234567."
         )
-
-    # E.164 allows at most 15 digits. The floor stays because a number this
-    # short cannot be dialled internationally, but it is a sanity bound now
-    # rather than the country-code check it was mistaken for.
-    if not 8 <= len(digits) <= 15:
-        raise PhoneRequired(
-            f"{raw!r} is not a valid international number: expected 8-15 "
-            f"digits including the country code, got {len(digits)}"
-        )
-    return digits
+    return (
+        f"{raw!r} is not a phone number we can dial. Use international format "
+        "with your country code, e.g. +972555000002."
+    )
 
 
 async def start_link(rt: Any, tenant_id: int, *, consent_acknowledged: bool,

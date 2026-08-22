@@ -17,6 +17,10 @@ dependencies = [
     # AEAD for per-tenant integration credentials at rest (api/crypto.py).
     # Present transitively via google-auth; declared because we depend on it directly.
     "cryptography>=42.0",
+    # E.164 parsing for WhatsApp pairing (integrations/whatsapp.py). Present
+    # transitively via neonize; declared because we depend on it directly — a
+    # neonize release that dropped it would otherwise break linking silently.
+    "phonenumbers>=9.0",
     # LLM SDKs (official; the intended egress)
     "anthropic>=0.40",
     "openai>=1.55",
