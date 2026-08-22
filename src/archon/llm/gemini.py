@@ -53,7 +53,15 @@ def _to_contents(messages: list[ChatMessage]) -> list[gt.Content]:
             if m.text:
                 parts.append(gt.Part.from_text(text=m.text))
             for tc in m.tool_calls:
-                parts.append(gt.Part.from_function_call(name=tc.name, args=tc.args))
+                if tc.signature:
+                    # Gemini 3.x requires the original thought_signature echoed
+                    # back, so rebuild the Part manually (from_function_call drops it).
+                    parts.append(gt.Part(
+                        function_call=gt.FunctionCall(name=tc.name, args=tc.args),
+                        thought_signature=tc.signature,
+                    ))
+                else:
+                    parts.append(gt.Part.from_function_call(name=tc.name, args=tc.args))
             contents.append(gt.Content(role="model", parts=parts or [gt.Part.from_text(text="")]))
         else:
             parts = []
@@ -126,6 +134,7 @@ class GeminiProvider:
                             id=f"gm-{i}",
                             name=part.function_call.name or "",
                             args=dict(part.function_call.args or {}),
+                            signature=getattr(part, "thought_signature", None),
                         )
                     )
         except (AttributeError, IndexError) as exc:

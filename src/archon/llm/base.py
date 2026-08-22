@@ -77,6 +77,12 @@ class ToolCall:
     id: str
     name: str
     args: dict[str, Any]
+    # Opaque provider data that must be echoed back on the follow-up request.
+    # Gemini 3.x "thinking" models return a thought_signature on the function
+    # call and reject the next turn with 400 if it is not replayed. Other
+    # providers leave this None. In-memory for the tool loop only (context is
+    # persisted as text, so it never needs to survive a save/load).
+    signature: bytes | None = None
 
 
 @dataclass(slots=True)
