@@ -353,13 +353,20 @@ async def run(rt: Runtime) -> None:
                                        msg.chat_name, msg.chat_kind)
             chat_row = repo.chat_get(store, msg.platform, msg.chat_id)
 
-            if msg.is_edit:
-                before = repo.message_mark_edited(store, msg.platform, msg.chat_id,
-                                                  msg.msg_id, msg.text)
-                await tglog.log_change(rt, msg, before)
-            elif msg.is_delete:
-                before = repo.message_mark_deleted(store, msg.platform, msg.chat_id,
-                                                   msg.msg_id)
+            if msg.is_edit or msg.is_delete:
+                if msg.is_edit:
+                    before = repo.message_mark_edited(store, msg.platform, msg.chat_id,
+                                                      msg.msg_id, msg.text)
+                else:
+                    before = repo.message_mark_deleted(store, msg.platform, msg.chat_id,
+                                                       msg.msg_id)
+                if before is None:
+                    # The target was never cached (arrived before Archon ran, or
+                    # the platform handed us an id we do not recognise). Say so:
+                    # a silent no-op here hides an id-mapping bug forever.
+                    rt.audit.note("change_target_unknown", tenant_id=msg.tenant_id,
+                                  platform=msg.platform, chat=msg.chat_id,
+                                  msg_id=msg.msg_id, kind="edit" if msg.is_edit else "delete")
                 await tglog.log_change(rt, msg, before)
             else:
                 repo.message_upsert(store, msg, chat_pk)

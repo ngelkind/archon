@@ -87,9 +87,22 @@ async def send_image(rt: Runtime, chat_jid: str, image_path: str,
     return msg_id
 
 
-async def mark_read(rt: Runtime, chat_jid: str, message_ids: list[str]) -> None:
+async def mark_read(rt: Runtime, chat_jid: str, message_ids: list[str],
+                    sender_jid: str | None = None) -> None:
+    """Send read receipts. neonize 0.4.3's signature is
+    ``mark_read(*ids, chat=, sender=, receipt=)`` — ids as varargs, the
+    SENDER of those messages (the chat itself for a DM, the participant for a
+    group), and a receipt type. The previous call passed a list positionally
+    and no sender, so every wa_mark_read failed."""
+    from neonize.utils.enum import ReceiptType
+
     client = _client(rt)
-    await client.mark_read(message_ids, chat=_to_jid(chat_jid))
+    if not message_ids:
+        return
+    await client.mark_read(
+        *[str(m) for m in message_ids], chat=_to_jid(chat_jid),
+        sender=_to_jid(sender_jid or chat_jid), receipt=ReceiptType.READ,
+    )
 
 
 async def check_number(rt: Runtime, phone: str) -> bool:

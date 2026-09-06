@@ -39,6 +39,42 @@ async def _notify(rt: Runtime, text: str) -> None:
             pass
 
 
+def _own_jid(me: Any, fallback: Any) -> Any:
+    """The owner's own JID from get_me(), or ``fallback``.
+
+    A protobuf message field is never None, so ``getattr(me, "JID") or x``
+    could not fall back; check the field is actually populated."""
+    jid = getattr(me, "JID", None)
+    if jid is None:
+        return fallback
+    has = getattr(me, "HasField", None)
+    if callable(has):
+        try:
+            if not me.HasField("JID"):
+                return fallback
+        except ValueError:
+            pass
+    return jid if getattr(jid, "User", "") else fallback
+
+
+async def _revoke_command(rt: Runtime, client: Any, inbound) -> None:
+    """Delete the /download command for everyone. build_revoke sets
+    fromMe = (myJID.User == sender.User); the message arrived under the owner's
+    @lid, so passing that @lid as sender made fromMe=False and WhatsApp rejected
+    it as deleting someone else's message (403/479). Pass the owner's OWN jid
+    as sender and revoke on the ORIGINAL chat so the message key matches.
+    Best-effort: the video is already there."""
+    try:
+        me = await client.get_me()
+        own = _own_jid(me, _to_jid(inbound.sender_id))
+        await client.revoke_message(_to_jid(inbound.chat_id), own, inbound.msg_id)
+        rt.audit.note("wa_download_revoked", chat=inbound.chat_id, msg_id=inbound.msg_id)
+    except Exception as exc:  # noqa: BLE001
+        rt.audit.note("wa_download_revoke_failed", error=repr(exc)[:150])
+        await _notify(rt, f"⚠️ The video was sent but the /download command could not be "
+                          f"deleted ({type(exc).__name__}).")
+
+
 async def handle_wa_download(rt: Runtime, client: Any, inbound, url: str) -> None:
     try:
         v = await downloader.download(url, rt.settings.media_dir, max_bytes=_WA_VIDEO_LIMIT)
@@ -58,22 +94,11 @@ async def handle_wa_download(rt: Runtime, client: Any, inbound, url: str) -> Non
         except Exception as exc:  # noqa: BLE001
             rt.audit.note("wa_lid_convert_failed", error=repr(exc)[:120])
     chat_candidates.append(inbound.chat_id)
-    chat = _to_jid(chat_candidates[0])
-
-    # Delete the /download command (revoke = delete for everyone). build_revoke
-    # sets fromMe = (myJID.User == sender.User); the message arrived under the
-    # owner's @lid, so passing that @lid as sender made fromMe=False and WhatsApp
-    # rejected it as "deleting someone else's message" (403/479). Pass the
-    # owner's OWN jid as sender (fromMe=True) and revoke on the ORIGINAL chat the
-    # message arrived on, so the message key matches. Best-effort.
-    try:
-        me = await client.get_me()
-        own = getattr(me, "JID", None) or _to_jid(inbound.sender_id)
-        await client.revoke_message(_to_jid(inbound.chat_id), own, inbound.msg_id)
-    except Exception as exc:  # noqa: BLE001
-        rt.audit.note("wa_download_revoke_failed", error=repr(exc)[:150])
 
     # Re-send the video as the owner, trying each candidate JID until one works.
+    # The command message is revoked only AFTER a successful send: revoking
+    # first left the chat with neither the command nor the video when the
+    # upload then failed.
     last_err: Exception | None = None
     for cand in chat_candidates:
         try:
@@ -84,6 +109,7 @@ async def handle_wa_download(rt: Runtime, client: Any, inbound, url: str) -> Non
                 await client.send_document(target, v.path, filename=f"{v.title[:60]}.mp4")
             rt.audit.note("download_sent", surface="wa", extractor=v.extractor,
                           size=v.size_bytes, jid=cand)
+            await _revoke_command(rt, client, inbound)
             return
         except Exception as exc:  # noqa: BLE001
             last_err = exc

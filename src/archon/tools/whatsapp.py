@@ -161,10 +161,18 @@ def register(registry: Registry) -> None:
         if row is None:
             return json.dumps({"error": "unknown chat"})
         rows = repo.message_history(ctx.store, row["id"], 10)
-        ids = [r["msg_id"] for r in rows if not r["is_from_me"]]
-        if ids:
-            await sender.mark_read(ctx.rt, chat_jid, ids)
-        return json.dumps({"ok": True, "marked": len(ids)})
+        # A receipt names the sender of the messages it covers; in a group
+        # that is the participant, so batch per sender.
+        by_sender: dict[str, list[str]] = {}
+        for r in rows:
+            if r["is_from_me"] or not r["msg_id"]:
+                continue
+            by_sender.setdefault(r["sender_id"] or chat_jid, []).append(r["msg_id"])
+        marked = 0
+        for sender_jid, ids in by_sender.items():
+            await sender.mark_read(ctx.rt, chat_jid, ids, sender_jid=sender_jid)
+            marked += len(ids)
+        return json.dumps({"ok": True, "marked": marked})
 
     @registry.tool(
         "wa_check_number",

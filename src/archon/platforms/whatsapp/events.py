@@ -227,8 +227,10 @@ def from_message_event(event: Any) -> InboundMessage | None:
             else:
                 return None  # app-state / history-sync noise
         elif is_edit:
-            # neonize unwrapped the edit; original id rides on the event if present
-            target_id = getattr(event, "OrigMessageID", "") or msg_id
+            # neonize unwrapped the edit and reports the ORIGINAL message id in
+            # Info.ID. (An earlier fallback read a non-existent OrigMessageID
+            # attribute, which always evaluated to the same thing anyway.)
+            target_id = msg_id
 
         # Unwrap a view-once container to its inner media message (the real
         # imageMessage/videoMessage/audioMessage lives inside). The media IS

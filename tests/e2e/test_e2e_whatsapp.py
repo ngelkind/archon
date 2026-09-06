@@ -206,3 +206,65 @@ async def test_health_does_not_claim_connected_before_the_server_says_so(tmp_pat
         assert h.rt.health["whatsapp"] != "connected"
     finally:
         await h.stop()
+
+
+@run_async
+async def test_wa_mark_read_uses_the_real_receipt_signature(tmp_path):
+    """The tool used to pass a list positionally with no sender; neonize's
+    mark_read(*ids, chat=, sender=, receipt=) rejected every call."""
+    from archon.tools.registry import ToolContext
+
+    client = _client()
+    async with await _start(tmp_path, client) as h:
+        other = "972500000003@s.whatsapp.net"
+        await client.fire(wa.text_message(GROUP, "one", msg_id="R1", sender=DANA))
+        await client.fire(wa.text_message(GROUP, "two", msg_id="R2", sender=other))
+        await h.wait_for_audit("not_whitelisted", chat=GROUP, count=2)
+        ctx = ToolContext(rt=h.rt, scope="owner")
+        out = await h.rt.registry.dispatch(ctx, "wa_mark_read", {"chat_jid": GROUP})
+        assert '"marked": 2' in out
+        receipts = {(r["sender"], tuple(r["ids"])) for r in client.read}
+        assert receipts == {(DANA, ("R1",)), (other, ("R2",))}
+        assert all(r["chat"] == GROUP for r in client.read)
+
+
+@run_async
+async def test_download_command_sends_before_it_revokes(tmp_path, monkeypatch):
+    from archon.platforms import downloader
+    from archon.platforms.whatsapp import download_cmd
+
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"\x00" * 10)
+
+    async def fake_download(url, media_dir, max_bytes=None):
+        return downloader.DownloadedVideo(path=str(video), title="clip", duration_s=3,
+                                          width=1, height=1, size_bytes=10, extractor="fake")
+
+    monkeypatch.setattr(download_cmd.downloader, "download", fake_download)
+    client = _client()
+    async with await _start(tmp_path, client) as h:
+        await client.fire(wa.text_message(GROUP, "/download https://example.com/v",
+                                          sender=wa.OWNER_JID, from_me=True, msg_id="CMD1"))
+        await h.wait_for_audit("wa_download_revoked", msg_id="CMD1")
+        assert client.sent[-1]["video"] == str(video)
+        assert client.revoked == [{"chat": GROUP, "sender": wa.OWNER_JID, "id": "CMD1"}]
+        assert h.audit("download_sent")[-1]["jid"] == GROUP
+
+        # A failed upload leaves the command in place (no revoke).
+        async def broken_send(*a, **k):
+            raise RuntimeError("upload failed")
+
+        client.send_video = broken_send  # type: ignore[method-assign]
+        await client.fire(wa.text_message(GROUP, "/download https://example.com/w",
+                                          sender=wa.OWNER_JID, from_me=True, msg_id="CMD2"))
+        await h.wait_for_audit("wa_download_send_failed", jid=GROUP)
+        assert len(client.revoked) == 1
+
+
+@run_async
+async def test_an_edit_of_an_uncached_message_is_audited(tmp_path):
+    client = _client()
+    async with await _start(tmp_path, client) as h:
+        await client.fire(wa.edit_message(GROUP, "NEVER-SEEN", "new text"))
+        note = await h.wait_for_audit("change_target_unknown", msg_id="NEVER-SEEN")
+        assert note["kind"] == "edit" and note["platform"] == "wa"
