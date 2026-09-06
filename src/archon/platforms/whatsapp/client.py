@@ -150,8 +150,26 @@ async def _capture_quoted_view_once(rt: Runtime, client: Any, event: Any, inboun
         rt.audit.note("wa_quoted_vo_failed", error=repr(exc)[:200])
 
 
-async def run(rt: Runtime) -> None:
+def build_client(rt: Runtime) -> Any:
+    """The real neonize async client over the owner's session file."""
     from neonize.aioze.client import NewAClient
+
+    session = rt.settings.wa_session_path
+    try:
+        return NewAClient(str(session), props=_android_props())
+    except TypeError:
+        return NewAClient(str(session))  # older neonize without props kwarg
+
+
+def wire_events(rt: Runtime, client: Any, fatal: asyncio.Event) -> None:
+    """Register every handler on ``client``. ``fatal`` is set by the events
+    that must end the session (logged out, banned, stream replaced).
+
+    ``client`` only needs neonize's ``event(EvType)`` decorator plus the calls
+    the handlers make, so ``archon.testing.fake_neonize.FakeAClient`` can stand
+    in — the handlers used to be closures inside ``run`` and no test had ever
+    fired one.
+    """
     from neonize.events import (
         ConnectedEv,
         LoggedOutEv,
@@ -161,19 +179,6 @@ async def run(rt: Runtime) -> None:
         TemporaryBanEv,
         UndecryptableMessageEv,
     )
-
-    session = rt.settings.wa_session_path
-    if not session.exists():
-        rt.health["whatsapp"] = "no session (see deploy/MIGRATION.md step 5)"
-        return  # clean return: supervisor will not restart-loop
-
-    try:
-        client = NewAClient(str(session), props=_android_props())
-    except TypeError:
-        client = NewAClient(str(session))  # older neonize without props kwarg
-    rt.clients["whatsapp"] = client
-    loop = asyncio.get_running_loop()
-    fatal = asyncio.Event()
 
     @client.event(ConnectedEv)
     async def on_connected(_c: Any, _ev: Any) -> None:
@@ -246,6 +251,7 @@ async def run(rt: Runtime) -> None:
             from ...logging_ import capture
 
             if not capture.capture_enabled(rt, "wa", info["chat_id"], info["chat_kind"]):
+                rt.audit.note("wa_capture_disarmed", chat=info["chat_id"], route="stub")
                 return
             row = repo.chat_get(rt.db, "wa", info["chat_id"])
             chat_name = row["name"] if row and row["name"] else None
@@ -282,6 +288,19 @@ async def run(rt: Runtime) -> None:
                 "WhatsApp is disabled here to avoid a login fight."
         )
         fatal.set()
+
+
+async def run(rt: Runtime, client: Any = None) -> None:
+    """Supervised loop. ``client`` is injectable for tests."""
+    session = rt.settings.wa_session_path
+    if client is None and not session.exists():
+        rt.health["whatsapp"] = "no session (see deploy/MIGRATION.md step 5)"
+        return  # clean return: supervisor will not restart-loop
+    if client is None:
+        client = build_client(rt)
+    rt.clients["whatsapp"] = client
+    fatal = asyncio.Event()
+    wire_events(rt, client, fatal)
 
     rt.health["whatsapp"] = "connecting"
     connect_task = asyncio.create_task(client.connect())

@@ -71,7 +71,10 @@ async def send_capture(rt: Runtime, *, platform: str, chat_id: str,
     channel = _log_channel(rt)
     bot = rt.send_bot()
     if channel is None or bot is None:
-        rt.audit.note("capture_no_channel", platform=platform, chat=chat_id)
+        # Keep the file: it is the only copy of a one-time item. The note
+        # carries the path so the owner can recover it by hand.
+        rt.audit.note("capture_no_channel", platform=platform, chat=chat_id,
+                      kind=kind, kept=local_path)
         return
     caption = (
         f"👁 <b>One-time {html.escape(kind)} captured</b>\n"
@@ -91,13 +94,17 @@ async def send_capture(rt: Runtime, *, platform: str, chat_id: str,
             return b.send_audio(channel, f, caption=caption)
         return b.send_document(channel, f, caption=caption)
 
+    result = await throttled_send(rt, _do)
+    if result is None:
+        # The post failed after a successful download+decrypt. Deleting the
+        # file here would destroy the one thing the feature exists to recover,
+        # so it stays on disk and the failure names it.
+        rt.audit.note("capture_send_failed", platform=platform, chat=chat_id,
+                      kind=kind, kept=local_path)
+        return
+    rt.audit.note("capture_sent", platform=platform, chat=chat_id, kind=kind)
+    # One-time media is transient; don't hoard it on disk after logging.
     try:
-        result = await throttled_send(rt, _do)
-        rt.audit.note("capture_sent" if result is not None else "capture_send_failed",
-                      platform=platform, chat=chat_id, kind=kind)
-    finally:
-        # One-time media is transient; don't hoard it on disk after logging.
-        try:
-            Path(local_path).unlink(missing_ok=True)
-        except OSError:
-            pass
+        Path(local_path).unlink(missing_ok=True)
+    except OSError:
+        pass

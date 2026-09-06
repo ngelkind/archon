@@ -49,6 +49,7 @@ class Harness:
         self.tmp = tmp
         self.tasks: dict[str, asyncio.Task] = {}
         self.telethon: Any = None
+        self.neonize: Any = None
         self.ledger: Ledger | None = None
         self._repo_originals: dict[str, object] | None = None
         self._debounce_backup: dict[str, float] | None = None
@@ -68,6 +69,7 @@ class Harness:
         debounce_s: float = 0.02,
         record_repo: bool = False,
         telethon: Any = None,
+        neonize: Any = None,
     ) -> "Harness":
         data = tmp_path / "data"
         secrets = tmp_path / "secrets"
@@ -98,6 +100,7 @@ class Harness:
 
         h = cls(rt, llm, tmp_path)
         h.telethon = telethon
+        h.neonize = neonize
         h._debounce_backup = dict(ingest._DEBOUNCE_S)
         for key in ingest._DEBOUNCE_S:
             ingest._DEBOUNCE_S[key] = debounce_s
@@ -131,6 +134,12 @@ class Harness:
             if self.telethon is None:
                 raise ValueError("start the harness with telethon=FakeTelethonClient(...)")
             return lambda: userbot.run(rt, client=self.telethon)
+        if name == "whatsapp":
+            from ..platforms.whatsapp import client as wa_client
+
+            if self.neonize is None:
+                raise ValueError("start the harness with neonize=FakeAClient(...)")
+            return lambda: wa_client.run(rt, client=self.neonize)
         raise ValueError(f"harness cannot start subsystem {name!r} yet")
 
     async def stop(self) -> None:
