@@ -258,9 +258,9 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
         chat_pk=chat_pk,
         auto_reply=auto_reply,
     )
-    rt.audit.note("triage", chat=first.chat_id, platform=first.platform,
-                  action=verdict.action, confidence=verdict.confidence,
-                  reason=verdict.reason)
+    rt.audit.note("triage", tenant_id=first.tenant_id, chat=first.chat_id,
+                  platform=first.platform, verdict=verdict.action,
+                  confidence=verdict.confidence, reason=verdict.reason)
     if verdict.action == "ignore":
         return
 

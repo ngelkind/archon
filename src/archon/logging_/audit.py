@@ -91,5 +91,20 @@ class AuditLog:
         )
 
     def note(self, message: str, tenant_id: int | None = None, **fields: Any) -> None:
-        """``tenant_id`` None = a SYSTEM note (startup, subsystem_crash)."""
-        self._write({"event": "note", "action": message, **fields}, tenant_id)
+        """``tenant_id`` None = a SYSTEM note (startup, subsystem_crash).
+
+        The note NAME is the record's identity — every query filters on
+        ``action`` — so a caller field can never shadow it. Colliding fields are
+        kept under a ``field_`` prefix and the collision itself is recorded,
+        because silently dropping data would hide the bug this guards against
+        (the live log held 328 notes named "ignore" instead of "triage")."""
+        clash = _RESERVED_NOTE_KEYS.intersection(fields)
+        if clash:
+            for key in sorted(clash):
+                fields[f"field_{key}"] = fields.pop(key)
+            fields["reserved_key_collision"] = sorted(clash)
+        self._write({**fields, "event": "note", "action": message}, tenant_id)
+
+
+#: Record keys a note caller may not set through ``**fields``.
+_RESERVED_NOTE_KEYS = frozenset({"event", "action", "ts", "tenant_id"})
