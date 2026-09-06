@@ -97,9 +97,16 @@ async def run_owner_turn(
     except ProviderError as exc:
         await sink.on_error(exc)
         return
+    except Exception as exc:  # noqa: BLE001 — same terminal-event guarantee as the API sink
+        rt.audit.note("owner_turn_failed", error=repr(exc)[:300])
+        await sink.on_error(exc)
+        return
 
     repo.context_add(store, chat_pk, None, "user", text)
-    repo.context_add(store, chat_pk, None, "assistant", reply)
+    if (reply or "").strip():
+        # An empty assistant turn is not memory; persisting it would make the
+        # next turn look like the model had answered.
+        repo.context_add(store, chat_pk, None, "assistant", reply)
     repo.context_prune(store, chat_pk, None)
     await sink.on_final(reply)
 
@@ -113,12 +120,21 @@ class TelegramSink:
         self._message = message
 
     async def on_tool_call(self, name: str, args: dict[str, Any], call_id: str) -> None:
-        return None
+        # A tool run can take seconds; "typing…" tells the owner the turn is alive.
+        try:
+            await self._message.bot.send_chat_action(self._message.chat.id, "typing")
+        except Exception:  # noqa: BLE001 — cosmetic
+            pass
 
     async def on_tool_result(self, name: str, call_id: str, result: str) -> None:
         return None
 
     async def on_final(self, text: str) -> None:
+        if not (text or "").strip():
+            # range(0, 0) sends nothing: the owner's message would get no
+            # reply at all while the tools may well have run.
+            await self._message.answer("⚠️ The model returned no text for this turn.")
+            return
         # Telegram HTML mode: escape, keep it simple. 4096-char message cap.
         for chunk_start in range(0, len(text), 4000):
             await self._message.answer(html.escape(text[chunk_start:chunk_start + 4000]))

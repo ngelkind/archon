@@ -11,10 +11,11 @@ the same dispatcher so we keep a single polling loop per token.
 from __future__ import annotations
 
 import html
+import traceback
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.filters import Command, CommandObject
+from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from ...db import repo
 from ...runtime import Runtime
@@ -28,14 +29,54 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
     dp = Dispatcher()
     owner_id = rt.settings.telegram_owner_id
 
-    def is_owner(message: Message) -> bool:
-        return message.from_user is not None and message.from_user.id == owner_id
+    # --- the owner gate, once, for every message and button tap -------------
+    # The control bot is not a public bot. One outer middleware replaces the
+    # nine copy-pasted `if not is_owner(message): return` checks (only two of
+    # which audited the drop) and the callback handler's own check.
+    @dp.message.outer_middleware()
+    async def owner_only_messages(handler, event: Message, data):
+        sender = event.from_user.id if event.from_user else None
+        if sender != owner_id:
+            rt.audit.note("non_owner_message", sender=sender)
+            return None
+        return await handler(event, data)
+
+    @dp.callback_query.outer_middleware()
+    async def owner_only_callbacks(handler, event: CallbackQuery, data):
+        sender = event.from_user.id if event.from_user else None
+        if sender != owner_id:
+            rt.audit.note("non_owner_callback", sender=sender)
+            try:
+                await event.answer("Not yours.", show_alert=True)
+            except Exception:  # noqa: BLE001 — a stranger's tap is not worth a crash
+                pass
+            return None
+        return await handler(event, data)
+
+    # --- failures reach the owner, not only stderr ---------------------------
+    # aiogram catches every handler exception and logs it to the `aiogram.event`
+    # logger; with no error observer the owner saw a command do nothing at all.
+    @dp.errors()
+    async def on_handler_error(event: ErrorEvent) -> None:
+        exc = event.exception
+        rt.audit.note("handler_error", error=repr(exc)[:300],
+                      trace=traceback.format_exc()[-1500:],
+                      update=type(event.update.event).__name__
+                      if getattr(event.update, "event", None) else "update")
+        rt.health["control_bot"] = f"degraded: last handler error {type(exc).__name__}"
+        message = getattr(event.update, "message", None)
+        if message is None and getattr(event.update, "callback_query", None) is not None:
+            message = event.update.callback_query.message
+        if message is not None:
+            try:
+                await message.answer(
+                    f"⚠️ That failed: {html.escape(type(exc).__name__)}: "
+                    f"{html.escape(str(exc)[:300])}")
+            except Exception:  # noqa: BLE001 — the reply itself may be what failed
+                pass
 
     @dp.message(Command("start", "help"))
     async def cmd_help(message: Message) -> None:
-        if not is_owner(message):
-            rt.audit.note("non_owner_message", sender=message.from_user.id if message.from_user else None)
-            return
         await message.answer(
             "<b>Archon</b> — your assistant.\n\n"
             "/status — subsystem health, uptime, queue depth\n"
@@ -48,8 +89,6 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
 
     @dp.message(Command("status"))
     async def cmd_status(message: Message) -> None:
-        if not is_owner(message):
-            return
         lines = [
             "<b>Archon status</b>",
             f"uptime: {rt.uptime_s() // 3600}h {(rt.uptime_s() % 3600) // 60}m",
@@ -64,12 +103,12 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
 
     @dp.message(Command("costs"))
     async def cmd_costs(message: Message) -> None:
-        if not is_owner(message):
-            return
         day = repo.llm_cost_since(rt.db, "-1 day")
         week = repo.llm_cost_since(rt.db, "-7 days")
         month = repo.llm_cost_since(rt.db, "-30 days")
-        assert day and week and month
+        if not (day and week and month):
+            await message.answer("No LLM cost data yet.")
+            return
         await message.answer(
             "<b>LLM costs</b>\n"
             f"24h: ${day['cost']:.4f} ({day['calls']} calls, "
@@ -80,8 +119,6 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
 
     @dp.message(Command("download"))
     async def cmd_download(message: Message) -> None:
-        if not is_owner(message):
-            return
         from . import download_cmd
 
         url = download_cmd.is_download_command(message.text)
@@ -92,22 +129,27 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
         await download_cmd.handle_control(rt, message.bot, message.chat.id, url)
 
     @dp.message(Command("selftest"))
-    async def cmd_selftest(message: Message) -> None:
-        if not is_owner(message):
+    async def cmd_selftest(message: Message, command: CommandObject) -> None:
+        from ...selftest import STEP_NAMES, run_selftest
+
+        which = (command.args or "all").strip()
+        unknown = [w for w in which.split() if w not in STEP_NAMES and w != "all"]
+        if unknown:
+            await message.answer(
+                f"Unknown step(s): {html.escape(' '.join(unknown))}. "
+                f"Valid: all {html.escape(' '.join(STEP_NAMES))}")
             return
-        which = (message.text or "").removeprefix("/selftest").strip() or "all"
-        await message.answer(f"Running self-test ({which})… this sends to the test targets.")
-        from ...selftest import run_selftest
+        await message.answer(f"Running self-test ({html.escape(which)})… "
+                             "this sends to the test targets.")
         try:
             report = await run_selftest(rt, which)
         except Exception as exc:  # noqa: BLE001
             report = f"self-test crashed: {type(exc).__name__}: {exc}"
-        await message.answer(html.escape(report))
+        for start in range(0, len(report), 3900):
+            await message.answer(html.escape(report[start:start + 3900]))
 
     @dp.message(Command("pair"))
     async def cmd_pair(message: Message) -> None:
-        if not is_owner(message):
-            return
         from datetime import UTC, datetime, timedelta
 
         from ...api.security import hash_secret, mint_pair_code
@@ -130,8 +172,6 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
 
     @dp.message(Command("ask"))
     async def cmd_ask(message: Message) -> None:
-        if not is_owner(message):
-            return
         text = (message.text or "").removeprefix("/ask").strip()
         if not text:
             await message.answer("Usage: /ask <question>")
@@ -145,8 +185,6 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
     # Owner sends a Google Contacts .csv → import it into the contact directory.
     @dp.message(F.document)
     async def owner_document(message: Message) -> None:
-        if not is_owner(message):
-            return
         doc = message.document
         fname = (doc.file_name or "").lower()
         if not (fname.endswith(".csv") or "contact" in fname):
@@ -170,9 +208,6 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
     # Any owner text without a command goes to the agent loop.
     @dp.message(F.text & ~F.text.startswith("/"))
     async def owner_text(message: Message) -> None:
-        if not is_owner(message):
-            rt.audit.note("non_owner_message", sender=message.from_user.id if message.from_user else None)
-            return
         handler = rt.owner_text_handler
         if handler is None:
             await message.answer("Agent loop not wired yet. Use /status.")
@@ -185,9 +220,6 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
     # owner typed something and nothing happened.
     @dp.message()
     async def owner_other(message: Message) -> None:
-        if not is_owner(message):
-            rt.audit.note("non_owner_message", sender=message.from_user.id if message.from_user else None)
-            return
         if message.text and message.text.startswith("/"):
             rt.audit.note("unknown_command", text=message.text[:64])
             await message.answer(

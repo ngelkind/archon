@@ -28,7 +28,7 @@ async def _step(rt: Runtime, name: str, coro) -> tuple[str, bool, str]:
     except Exception as exc:  # noqa: BLE001
         rt.audit.note("selftest_step", step=name, ok=False,
                       error=repr(exc)[:300], trace=traceback.format_exc()[-600:])
-        return name, False, f"{type(exc).__name__}: {exc}"
+        return name, False, f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
 async def _wa_text(rt: Runtime) -> str:
@@ -155,10 +155,18 @@ _STEPS: dict[str, Any] = {
 }
 
 
+STEP_NAMES = tuple(_STEPS)
+
+
 async def run_selftest(rt: Runtime, which: str = "all") -> str:
     started = time.time()
     rt.audit.note("selftest_start", which=which)
-    names = list(_STEPS) if which in ("", "all") else [w for w in which.split() if w in _STEPS]
+    words = which.split()
+    unknown = [w for w in words if w not in _STEPS and w != "all"]
+    if unknown:
+        raise ValueError(f"unknown self-test step(s): {' '.join(unknown)}; "
+                         f"valid: {' '.join(_STEPS)}")
+    names = list(_STEPS) if (not words or "all" in words) else [w for w in words if w in _STEPS]
     results = []
     for name in names:
         results.append(await _step(rt, name, _STEPS[name](rt)))

@@ -177,9 +177,8 @@ async def resolve_action(
 def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
     @dp.callback_query(F.data.startswith("pa:"))
     async def on_confirm(query: CallbackQuery) -> None:
-        if query.from_user.id != rt.settings.telegram_owner_id:
-            await query.answer("Not yours.", show_alert=True)
-            return
+        # Ownership is enforced by the control dispatcher's outer middleware
+        # (control.build); a second check here would be a copy to drift.
         try:
             _, raw_id, verdict = (query.data or "").split(":")
             action_id = int(raw_id)

@@ -120,3 +120,49 @@ async def test_owner_turn_that_uses_a_tool_reports_the_result(tmp_path):
         found = h.llm.calls("strong")[1].last_tool_result
         assert found and "-1001000" in found
         assert [t["action"] for t in h.tool_rows()] == ["chat_find", "whitelist_add"]
+
+
+@run_async
+async def test_a_handler_exception_reaches_the_owner(tmp_path, monkeypatch):
+    """Before the errors observer, aiogram logged the exception and the owner
+    saw a command do nothing."""
+    from archon.platforms.telegram import control
+
+    def explode(*_a, **_k):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(control.repo, "llm_cost_since", explode)
+    async with await _start(tmp_path) as h:
+        reply = await h.owner_says("/costs")
+        assert reply.startswith("⚠️ That failed: RuntimeError: db exploded")
+        err = h.audit("handler_error")[-1]
+        assert "db exploded" in err["error"]
+        assert h.rt.health["control_bot"].startswith("degraded")
+
+
+@run_async
+async def test_an_empty_model_reply_is_still_a_reply(tmp_path):
+    """Scenario O: range(0, 0) used to send nothing at all."""
+    async with await _start(tmp_path, ScriptedProvider().final("")) as h:
+        reply = await h.owner_says("hello?")
+        assert "returned no text" in reply
+        rows = h.rows("SELECT role FROM context_messages")
+        assert [r["role"] for r in rows] == ["user"], "an empty assistant turn is not memory"
+
+
+@run_async
+async def test_a_strangers_button_tap_is_refused(tmp_path):
+    async with await _start(tmp_path) as h:
+        h.bot_api.callback(data="pa:1:ok", from_id=STRANGER)
+        await h.wait_for_audit("non_owner_callback", sender=STRANGER)
+        call = await h.bot_api.wait_for_call("answerCallbackQuery")
+        assert call.data["text"] == "Not yours."
+
+
+@run_async
+async def test_selftest_rejects_unknown_steps_instead_of_reporting_zero_of_zero(tmp_path):
+    async with await _start(tmp_path) as h:
+        reply = await h.owner_says("/selftest whatsapp")
+        assert reply.startswith("Unknown step(s): whatsapp")
+        assert "wa_text" in reply
+        assert h.audit("selftest_start") == []
