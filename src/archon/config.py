@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     telegram_api_hash: str | None = None
     telethon_session: str | None = None  # StringSession — OWNER ONLY
 
+    # --- WhatsApp off switch ---
+    # False stops the WhatsApp subsystem cleanly and hides every wa_* tool from
+    # the agent; the runtime setting ``whatsapp.enabled`` can do the same
+    # without a restart. The PoC must be able to turn this off in one line.
+    whatsapp_enabled: bool = True
+
     # --- Userbot outbound pacing (see pacing.py) ---
     # Ban-avoidance budgets for per-tenant userbot sends. The GLOBAL pair is the
     # one that protects the shared TELEGRAM_API_ID: Telegram flags at the api_id

@@ -129,10 +129,9 @@ class Harness:
     def supervise(self, name: str, factory: Callable[[], Awaitable[None]], *,
                   backoff_s: float = 0.05) -> asyncio.Task:
         """Run any coroutine factory under the REAL supervisor (crash loop,
-        alerts, deliberate/terminal states), with a short backoff."""
-        task = asyncio.create_task(
-            app_module._supervise(self.rt, name, factory, backoff_s=backoff_s),
-            name=f"harness:{name}")
+        alerts, deliberate/terminal states), with a short backoff. Registered
+        on ``rt.subsystems`` exactly as app.main does, so restart paths work."""
+        task = app_module.start_subsystem(self.rt, name, factory, backoff_s=backoff_s)
         self.tasks[name] = task
         return task
 
@@ -168,9 +167,10 @@ class Harness:
         if self._stopped:
             return
         self._stopped = True
-        for task in self.tasks.values():
+        live = {**self.tasks, **{k: v for k, v in self.rt.tasks.items() if isinstance(v, asyncio.Task)}}
+        for task in live.values():
             task.cancel()
-        for task in self.tasks.values():
+        for task in live.values():
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 — teardown

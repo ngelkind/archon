@@ -34,9 +34,11 @@ def _client(**kw) -> wa.FakeAClient:
 async def _start(tmp_path, client, script=None, **settings) -> Harness:
     h = await Harness.start(tmp_path, subsystems=("pipeline", "whatsapp"),
                             neonize=client, script=script, settings=settings or None)
-    await h.wait_for(lambda: h.rt.clients.get("whatsapp") is client, what="client registered")
+    await h.wait_for(lambda: client.connect_task is not None, what="connect() called")
+    assert "whatsapp" not in h.rt.clients, "a client is not usable before ConnectedEv"
     await client.go_online()
     await h.wait_for_audit("wa_groups_synced")
+    assert h.rt.clients["whatsapp"] is client
     return h
 
 
@@ -182,30 +184,82 @@ async def test_quoted_view_once_with_keys_is_recovered(tmp_path):
 
 
 @run_async
-async def test_logged_out_ends_the_session_with_a_terminal_health_state(tmp_path):
+async def test_logged_out_ends_the_session_releases_the_client_and_tells_the_owner(tmp_path):
     client = _client()
     async with await _start(tmp_path, client) as h:
         await client.fire(wa.logged_out())
         await h.wait_for_audit("wa_logged_out")
-        await h.wait_for(lambda: h.rt.health["whatsapp"].startswith("LOGGED OUT"),
-                         what="terminal health")
-        # The supervised task returned; the state string survives it.
-        await h.wait_for(lambda: h.tasks["whatsapp"].done(), what="subsystem exit")
+        await h.wait_for_audit("subsystem_terminal", subsystem="whatsapp")
         assert h.rt.health["whatsapp"].startswith("LOGGED OUT")
+        assert "whatsapp" not in h.rt.clients
+        assert client.stopped, "disconnect() alone leaves the Go client holding session.db"
+        # No control bot in this harness: the alert is queued, not lost.
+        queued = h.audit("owner_alert_queued", key="subsystem:whatsapp:terminal")
+        assert queued and "LOGGED OUT" in queued[-1]["text"]
+        # And the tools say why they cannot work.
+        from archon.tools.registry import ToolContext
+        out = await h.rt.registry.dispatch(ToolContext(rt=h.rt, scope="owner"),
+                                           "wa_send_message", {"chat_jid": GROUP, "text": "x"})
+        assert "LOGGED OUT" in out and "/wa_pair" in out
 
 
-@pytest.mark.xfail(strict=True, reason="lifecycle commit: health must follow ConnectedEv, not connect()")
 @run_async
 async def test_health_does_not_claim_connected_before_the_server_says_so(tmp_path):
     client = _client()
     h = await Harness.start(tmp_path, subsystems=("pipeline", "whatsapp"), neonize=client)
     try:
-        await h.wait_for(lambda: h.rt.clients.get("whatsapp") is client, what="client")
         await h.wait_for(lambda: client.connect_task is not None, what="connect() called")
         # connect() returned its task; no ConnectedEv has fired.
-        assert h.rt.health["whatsapp"] != "connected"
+        assert h.rt.health["whatsapp"] == "connecting"
+        assert "whatsapp" not in h.rt.clients
+        await client.go_online()
+        await h.wait_for(lambda: h.rt.health["whatsapp"] == "connected", what="ConnectedEv")
     finally:
         await h.stop()
+
+
+@run_async
+async def test_an_unpaired_session_is_a_terminal_state_not_a_hang(tmp_path, monkeypatch):
+    from archon.platforms.whatsapp import client as wa_client
+
+    monkeypatch.setattr(wa_client, "CONNECT_TIMEOUT_S", 0.3)
+    client = _client(logged_in=False)
+    client.connected_flag = True  # socket up, but the device was removed
+    async with await Harness.start(tmp_path, subsystems=("pipeline", "whatsapp"),
+                                   neonize=client) as h:
+        await h.wait_for_audit("wa_not_paired")
+        await h.wait_for_audit("subsystem_terminal", subsystem="whatsapp")
+        assert h.rt.health["whatsapp"].startswith("NOT PAIRED")
+        assert "whatsapp" not in h.rt.clients and client.stopped
+
+
+@run_async
+async def test_the_watchdog_reports_a_lost_socket_and_its_return(tmp_path, monkeypatch):
+    from archon.platforms.whatsapp import client as wa_client
+
+    monkeypatch.setattr(wa_client, "WATCHDOG_S", 0.05)
+    client = _client()
+    async with await _start(tmp_path, client) as h:
+        await client.socket_up(False)
+        await h.wait_for_audit("wa_socket_lost")
+        assert h.rt.health["whatsapp"].startswith("disconnected (socket down")
+        assert h.audit("owner_alert_queued", key="whatsapp:socket")
+        await client.socket_up(True)
+        await h.wait_for_audit("wa_socket_back")
+        assert h.rt.health["whatsapp"] == "connected"
+
+
+@run_async
+async def test_the_off_switch_disables_the_subsystem_and_hides_the_tools(tmp_path):
+    client = _client()
+    async with await Harness.start(tmp_path, subsystems=("pipeline", "whatsapp"),
+                                   neonize=client, settings={"whatsapp_enabled": False}) as h:
+        await h.wait_for_audit("subsystem_idle", subsystem="whatsapp")
+        assert h.rt.health["whatsapp"] == "disabled (whatsapp.enabled=false)"
+        assert client.connect_task is None
+        offered = {t.name for t in h.rt.registry.specs_for("owner", hidden=h.rt.registry.hidden_for(h.rt))}
+        assert not any(n.startswith("wa_") for n in offered)
+        assert "tg_send_private" in offered
 
 
 @run_async

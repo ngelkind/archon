@@ -108,7 +108,8 @@ def _set_health(rt: Runtime, name: str, state: str) -> None:
 DELIBERATE_PREFIXES = ("disabled", "no session", "not configured", "no token", "watching")
 #: Health strings for a session that is over and must NOT be restarted into
 #: (a restart would fight a ban or a replaced stream). The owner is told once.
-TERMINAL_PREFIXES = ("LOGGED OUT", "TEMPORARY BAN", "STREAM REPLACED", "SESSION INVALID")
+TERMINAL_PREFIXES = ("LOGGED OUT", "TEMPORARY BAN", "STREAM REPLACED", "SESSION INVALID",
+                     "NOT PAIRED")
 #: A subsystem that stayed up this long before failing gets its backoff and
 #: failure count reset — the failure is fresh, not the same crash loop.
 _HEALTHY_S = 600.0
@@ -191,17 +192,36 @@ async def _supervise(rt: Runtime, name: str, coro_factory, *, backoff_s: float =
         await _failed("stopped unexpectedly", rt.health.get(name, ""))
 
 
+def start_subsystem(rt: Runtime, name: str, coro_factory=None, *,
+                    backoff_s: float = 5.0) -> asyncio.Task:
+    """Start (or restart) one supervised subsystem.
+
+    Factories are remembered on ``rt.subsystems`` so an owner command can bring
+    a subsystem back after a terminal state — WhatsApp after ``/wa_pair`` —
+    without a process restart. A still-running task for ``name`` is cancelled
+    first.
+    """
+    if coro_factory is not None:
+        rt.subsystems[name] = coro_factory
+    factory = rt.subsystems[name]
+    old = rt.tasks.get(name)
+    if old is not None and not old.done():
+        old.cancel()
+    task = asyncio.create_task(_supervise(rt, name, factory, backoff_s=backoff_s),
+                               name=f"archon:{name}")
+    rt.tasks[name] = task
+    return task
+
+
 async def main() -> None:
     from .pipeline import ingest
     from .platforms.gmail import poller as gmail_poller
 
     rt = build_runtime()
-    tasks = [asyncio.create_task(_supervise(rt, "pipeline", lambda: ingest.run(rt)))]
+    start_subsystem(rt, "pipeline", lambda: ingest.run(rt))
 
     if rt.settings.telegram_bot_token and rt.settings.telegram_owner_id:
-        tasks.append(
-            asyncio.create_task(_supervise(rt, "control_bot", lambda: control.run(rt)))
-        )
+        start_subsystem(rt, "control_bot", lambda: control.run(rt))
     else:
         # Product-only deployment: there is no owner to control.
         rt.health["control_bot"] = "disabled (no owner Telegram credentials)"
@@ -209,46 +229,31 @@ async def main() -> None:
     # The poller serves the owner's token file AND every tenant who linked
     # Google, so in product mode it must run even with no owner token on disk.
     if rt.settings.google_token_path.exists() or rt.settings.multitenant_enabled:
-        tasks.append(
-            asyncio.create_task(_supervise(rt, "gmail", lambda: gmail_poller.run(rt)))
-        )
+        start_subsystem(rt, "gmail", lambda: gmail_poller.run(rt))
     else:
         rt.health["gmail"] = "no token (run scripts/google_consent.py)"
 
-    if rt.settings.wa_session_path.exists():
-        from .platforms.whatsapp import client as wa_client
+    # WhatsApp decides for itself (off switch, no session, pairing state) and
+    # leaves a deliberate health string in each case.
+    from .platforms.whatsapp import client as wa_client
 
-        tasks.append(
-            asyncio.create_task(_supervise(rt, "whatsapp", lambda: wa_client.run(rt)))
-        )
-    else:
-        rt.health["whatsapp"] = "no session (deploy/MIGRATION.md step 5)"
+    start_subsystem(rt, "whatsapp", lambda: wa_client.run(rt))
 
     from .platforms.telegram import subbots as tg_subbots
     from .platforms.telegram import userbot as tg_userbot
     from .scheduler import loop as scheduler_loop
 
-    tasks.append(
-        asyncio.create_task(_supervise(rt, "tg_userbot", lambda: tg_userbot.run(rt)))
-    )
-    tasks.append(
-        asyncio.create_task(_supervise(rt, "scheduler", lambda: scheduler_loop.run(rt)))
-    )
-    tasks.append(
-        asyncio.create_task(_supervise(rt, "subbots", lambda: tg_subbots.run(rt)))
-    )
+    start_subsystem(rt, "tg_userbot", lambda: tg_userbot.run(rt))
+    start_subsystem(rt, "scheduler", lambda: scheduler_loop.run(rt))
+    start_subsystem(rt, "subbots", lambda: tg_subbots.run(rt))
     from . import testconsole
-    tasks.append(
-        asyncio.create_task(_supervise(rt, "testconsole", lambda: testconsole.watch(rt)))
-    )
+
+    start_subsystem(rt, "testconsole", lambda: testconsole.watch(rt))
 
     from .platforms.telegram import product as tg_product
 
     if tg_product.enabled(rt):
-        tasks.append(
-            asyncio.create_task(
-                _supervise(rt, "product_bot", lambda: tg_product.run(rt)))
-        )
+        start_subsystem(rt, "product_bot", lambda: tg_product.run(rt))
     else:
         rt.health["product_bot"] = "disabled (multitenant + PRODUCT_TELEGRAM_BOT_TOKEN)"
 
@@ -262,9 +267,12 @@ async def main() -> None:
     if rt.settings.api_enabled:
         from .api import server as api_server
 
-        tasks.append(
-            asyncio.create_task(_supervise(rt, "api", lambda: api_server.run(rt)))
-        )
+        start_subsystem(rt, "api", lambda: api_server.run(rt))
     else:
         rt.health["api"] = "disabled (set API_ENABLED=true)"
-    await asyncio.gather(*tasks)
+    # Subsystems restarted later (rt.tasks changes) are picked up because the
+    # gather is over the live task set at each iteration.
+    while True:
+        await asyncio.gather(*list(rt.tasks.values()))
+        if all(t.done() for t in rt.tasks.values()):
+            return

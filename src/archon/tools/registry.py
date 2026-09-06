@@ -18,7 +18,8 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Literal
+from collections.abc import Awaitable, Callable
 
 from ..llm.base import ToolSpec
 from ..runtime import Runtime
@@ -97,8 +98,18 @@ class Registry:
 
         return deco
 
-    def specs_for(self, scope: Scope) -> list[ToolSpec]:
-        return [t.spec() for t in self._tools.values() if scope in t.scopes]
+    def specs_for(self, scope: Scope, *, hidden: frozenset[str] = frozenset()) -> list[ToolSpec]:
+        return [t.spec() for t in self._tools.values()
+                if scope in t.scopes and t.name not in hidden]
+
+    def hidden_for(self, rt: Any) -> frozenset[str]:
+        """Tools the agent must not be offered right now — the WhatsApp tools
+        when the subsystem is switched off (they could only fail)."""
+        from ..platforms.whatsapp import client as wa_client
+
+        if wa_client.enabled(rt):
+            return frozenset()
+        return frozenset(name for name in self._tools if name.startswith("wa_"))
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)

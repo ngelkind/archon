@@ -53,7 +53,7 @@ async def run_agent(
     (the API) to surface progress. Existing callers pass nothing and are
     unaffected.
     """
-    tools = registry.specs_for(ctx.scope)
+    tools = registry.specs_for(ctx.scope, hidden=registry.hidden_for(ctx.rt))
     history = list(messages)
 
     for _ in range(_MAX_ITERATIONS):

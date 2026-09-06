@@ -51,7 +51,7 @@ async def test_immediate_whatsapp_auto_reply_is_sent(tmp_path):
     script = ScriptedProvider().triage("respond").reply("On my way!")
     async with await Harness.start(tmp_path, subsystems=("pipeline", "whatsapp"),
                                    neonize=client, script=script) as h:
-        await h.wait_for(lambda: h.rt.clients.get("whatsapp") is client, what="client")
+        await h.wait_for(lambda: client.connect_task is not None, what="connect() called")
         await client.go_online()
         await h.wait_for_audit("wa_groups_synced")
         repo.setting_set(h.rt.db, "wa.send_delay_min_s", 0.0)

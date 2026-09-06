@@ -41,6 +41,10 @@ class Runtime:
     alert_state: dict = field(default_factory=dict)
     # Out-of-band send pacing (logging_/send.py); built lazily inside the loop.
     send_throttle: object | None = None
+    # Supervised subsystems: name -> coroutine factory, and the live task for
+    # each, so an owner command can restart one (app.start_subsystem).
+    subsystems: dict[str, object] = field(default_factory=dict)
+    tasks: dict[str, object] = field(default_factory=dict)
     # Wired in app.build_runtime after construction (circular-import avoidance):
     # llm.router.Router, tools.registry.Registry, and the control-bot text
     # handler. Typed as Any deliberately.

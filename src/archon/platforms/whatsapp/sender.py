@@ -27,7 +27,10 @@ def _delays(rt: Runtime) -> tuple[float, float]:
 def _client(rt: Runtime) -> Any:
     client = rt.clients.get("whatsapp")
     if client is None:
-        raise RuntimeError("WhatsApp is not connected")
+        state = rt.health.get("whatsapp", "not running")
+        raise RuntimeError(
+            f"WhatsApp is not connected (whatsapp: {state}). "
+            "If it says LOGGED OUT or NOT PAIRED, send /wa_pair in the control chat.")
     return client
 
 

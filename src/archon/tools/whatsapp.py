@@ -25,9 +25,25 @@ async def _send_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
 confirm.register_executor("wa.send", _send_executor)
 
 
+def unavailable(rt: Runtime) -> str | None:
+    """A JSON error when WhatsApp cannot act right now, else None. Checked
+    BEFORE a send is queued for confirmation: a card the owner approves for a
+    dead subsystem would only fail later, out of sight."""
+    if rt.clients.get("whatsapp") is not None:
+        return None
+    state = rt.health.get("whatsapp", "not running")
+    return json.dumps({
+        "error": f"WhatsApp is not connected (whatsapp: {state}). "
+                 "If it says LOGGED OUT or NOT PAIRED, send /wa_pair in the control chat.",
+        "whatsapp": state,
+    })
+
+
 async def _send_or_confirm(ctx: ToolContext, chat_jid: str, text: str | None,
                            image_path: str | None = None) -> str:
     rt = ctx.rt
+    if (down := unavailable(rt)) is not None:
+        return down
     row = repo.chat_get(ctx.store, "wa", chat_jid)
     chat_name = row["name"] if row else chat_jid
 
@@ -157,6 +173,8 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def wa_mark_read(ctx: ToolContext, chat_jid: str) -> str:
+        if (down := unavailable(ctx.rt)) is not None:
+            return down
         row = repo.chat_get(ctx.store, "wa", chat_jid)
         if row is None:
             return json.dumps({"error": "unknown chat"})
@@ -184,5 +202,7 @@ def register(registry: Registry) -> None:
         },
     )
     async def wa_check_number(ctx: ToolContext, phone: str) -> str:
+        if (down := unavailable(ctx.rt)) is not None:
+            return down
         on = await sender.check_number(ctx.rt, phone)
         return json.dumps({"phone": phone, "on_whatsapp": on})

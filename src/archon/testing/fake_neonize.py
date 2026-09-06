@@ -152,8 +152,10 @@ class FakeAClient:
 
     def __init__(self, *, groups: list[FakeGroup] | None = None,
                  me: str = OWNER_JID, media: bytes = b"\xff\xd8fake-jpeg",
-                 lid_to_phone: dict[str, str] | None = None) -> None:
+                 lid_to_phone: dict[str, str] | None = None,
+                 logged_in: bool = True) -> None:
         self.groups = list(groups or [])
+        self.logged_in = logged_in
         self.me_jid = me
         self.media = media
         self.lid_to_phone = dict(lid_to_phone or {})
@@ -202,6 +204,16 @@ class FakeAClient:
         async def _get() -> bool:
             return self.connected_flag
         return _get()  # an unawaited coroutine — always truthy, as in neonize
+
+    @property
+    def is_logged_in(self) -> Awaitable[bool]:
+        async def _get() -> bool:
+            return self.logged_in
+        return _get()
+
+    async def socket_up(self, up: bool) -> None:
+        """Simulate whatsmeow's IsConnected changing without an event."""
+        self.connected_flag = up
 
     async def disconnect(self) -> None:
         self.connected_flag = False

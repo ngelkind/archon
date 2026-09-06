@@ -10,11 +10,20 @@ alert the owner instead of crash-looping — pattern from wa_helper/bot.py.
 from __future__ import annotations
 
 import asyncio
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from ...db import repo
 from ...runtime import Runtime
 from . import events as wa_events
+
+#: How long to wait for the server's ConnectedEv before deciding the session is
+#: unpaired (or the connect failed). whatsmeow normally connects in seconds.
+CONNECT_TIMEOUT_S = 60.0
+_CONNECT_POLL_S = 0.1
+#: How often the watchdog asks whatsmeow whether the socket is still up.
+WATCHDOG_S = 30.0
 
 
 def _android_props():
@@ -34,15 +43,6 @@ def _android_props():
         platformType=reg.DeviceProps.ANDROID_PHONE,
         requireFullSync=False,
     )
-
-
-async def _alert_owner(rt: Runtime, text: str) -> None:
-    bot = rt.send_bot()
-    if bot is not None:
-        try:
-            await bot.send_message(rt.settings.telegram_owner_id, text)  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
 
 
 async def _download_media_if_wanted(rt: Runtime, client: Any, event: Any, inbound) -> None:
@@ -161,9 +161,20 @@ def build_client(rt: Runtime) -> Any:
         return NewAClient(str(session))  # older neonize without props kwarg
 
 
-def wire_events(rt: Runtime, client: Any, fatal: asyncio.Event) -> None:
-    """Register every handler on ``client``. ``fatal`` is set by the events
-    that must end the session (logged out, banned, stream replaced).
+@dataclass
+class Session:
+    """What ``run`` observes about one WhatsApp session, written by the
+    handlers ``wire_events`` registers."""
+
+    connected: asyncio.Event = field(default_factory=asyncio.Event)
+    fatal: asyncio.Event = field(default_factory=asyncio.Event)
+    terminal: str | None = None
+
+
+def wire_events(rt: Runtime, client: Any, session: Session | asyncio.Event) -> None:
+    """Register every handler on ``client``. The fatal events (logged out,
+    banned, stream replaced) set ``session.fatal``; ``ConnectedEv`` sets
+    ``session.connected`` — the ONLY signal that means the server accepted us.
 
     ``client`` only needs neonize's ``event(EvType)`` decorator plus the calls
     the handlers make, so ``archon.testing.fake_neonize.FakeAClient`` can stand
@@ -180,8 +191,14 @@ def wire_events(rt: Runtime, client: Any, fatal: asyncio.Event) -> None:
         UndecryptableMessageEv,
     )
 
+    if isinstance(session, asyncio.Event):  # older callers passed the fatal event
+        session = Session(fatal=session)
+    fatal = session.fatal
+
     @client.event(ConnectedEv)
     async def on_connected(_c: Any, _ev: Any) -> None:
+        session.connected.set()
+        rt.clients["whatsapp"] = client
         rt.health["whatsapp"] = "connected"
         rt.audit.note("wa_connected")
         try:
@@ -265,63 +282,145 @@ def wire_events(rt: Runtime, client: Any, fatal: asyncio.Event) -> None:
     async def on_pair(_c: Any, ev: Any) -> None:
         rt.audit.note("wa_pair_status", detail=str(ev)[:200])
 
+    def _terminal(state: str) -> None:
+        # The supervisor reports a terminal state to the owner exactly once
+        # and does not restart into it; ``run`` releases the client.
+        session.terminal = state
+        rt.health["whatsapp"] = state
+        fatal.set()
+
     @client.event(LoggedOutEv)
     async def on_logged_out(_c: Any, _ev: Any) -> None:
-        rt.health["whatsapp"] = "LOGGED OUT — re-pair required"
         rt.audit.note("wa_logged_out")
-        await _alert_owner(rt, "⚠️ WhatsApp session logged out. Re-pairing is required.")
-        fatal.set()
+        _terminal("LOGGED OUT — re-pair with /wa_pair")
 
     @client.event(TemporaryBanEv)
     async def on_ban(_c: Any, ev: Any) -> None:
-        rt.health["whatsapp"] = "TEMPORARY BAN"
         rt.audit.note("wa_temporary_ban", detail=str(ev)[:200])
-        await _alert_owner(rt, "🚫 WhatsApp reports a temporary ban. WhatsApp is disabled.")
-        fatal.set()
+        _terminal("TEMPORARY BAN — WhatsApp disabled until it lifts")
 
     @client.event(StreamReplacedEv)
     async def on_replaced(_c: Any, _ev: Any) -> None:
-        rt.health["whatsapp"] = "STREAM REPLACED (another client on this session?)"
         rt.audit.note("wa_stream_replaced")
-        await _alert_owner(
-            rt, "⚠️ WhatsApp stream replaced — is the old bot still running somewhere? "
-                "WhatsApp is disabled here to avoid a login fight."
-        )
-        fatal.set()
+        _terminal("STREAM REPLACED — another client is using this session; "
+                  "WhatsApp disabled here to avoid a login fight")
+
+
+def enabled(rt: Runtime) -> bool:
+    """The off switch: WHATSAPP_ENABLED / the ``whatsapp.enabled`` setting."""
+    if not getattr(rt.settings, "whatsapp_enabled", True):
+        return False
+    return bool(repo.setting_get(rt.db, "whatsapp.enabled", True))
+
+
+async def _is_connected(client: Any) -> bool:
+    from ...integrations.whatsapp import _is_connected as probe
+
+    return await probe(client)
+
+
+async def _is_logged_in(client: Any) -> bool:
+    """``is_logged_in`` has the same awaitable-property trap as ``is_connected``."""
+    import inspect
+
+    value = client.is_logged_in
+    if inspect.isawaitable(value):
+        value = await value
+    return bool(value)
+
+
+async def _release(rt: Runtime, client: Any) -> None:
+    """Forget the client and stop the Go side. ``disconnect()`` alone leaves the
+    Go client alive holding the session file (see integrations/whatsapp.py)."""
+    if rt.clients.get("whatsapp") is client:
+        rt.clients.pop("whatsapp", None)
+    try:
+        await client.stop()
+    except Exception as exc:  # noqa: BLE001 — best effort on the way out
+        rt.audit.note("wa_stop_failed", error=repr(exc)[:120])
 
 
 async def run(rt: Runtime, client: Any = None) -> None:
-    """Supervised loop. ``client`` is injectable for tests."""
-    session = rt.settings.wa_session_path
-    if client is None and not session.exists():
+    """Supervised loop. ``client`` is injectable for tests.
+
+    Honesty rules, each of which the previous version broke:
+
+    * health says ``connected`` only after ``ConnectedEv`` — neonize's
+      ``connect()`` returns a task the moment the Go client is being built, and
+      the old code set ``connected`` right there, so /status lied for the
+      whole two weeks the live session was logged out;
+    * ``rt.clients["whatsapp"]`` exists only while the session is usable;
+    * a session that connects but is not logged in (device removed, pairing
+      never completed) is a terminal ``NOT PAIRED`` state, not a hang;
+    * a watchdog re-checks whatsmeow's own ``IsConnected`` and downgrades
+      health (and tells the owner) when the socket is gone;
+    * a fatal event ends the session, releases the client and returns with a
+      terminal state the supervisor reports once and never restarts into.
+    """
+    if not enabled(rt):
+        rt.health["whatsapp"] = "disabled (whatsapp.enabled=false)"
+        return
+    session_path = rt.settings.wa_session_path
+    if client is None and not session_path.exists():
         rt.health["whatsapp"] = "no session (see deploy/MIGRATION.md step 5)"
         return  # clean return: supervisor will not restart-loop
     if client is None:
         client = build_client(rt)
-    rt.clients["whatsapp"] = client
-    fatal = asyncio.Event()
-    wire_events(rt, client, fatal)
+    session = Session()
+    wire_events(rt, client, session)
 
     rt.health["whatsapp"] = "connecting"
-    connect_task = asyncio.create_task(client.connect())
-    fatal_task = asyncio.create_task(fatal.wait())
-    done, _pending = await asyncio.wait(
-        {connect_task, fatal_task}, return_when=asyncio.FIRST_COMPLETED
-    )
-    if fatal.is_set():
-        # Intentional shutdown of the subsystem: stop the socket, return cleanly
-        # so the supervisor does NOT restart into a ban/replace fight.
-        connect_task.cancel()
-        return
-    # The async client's connect() RETURNS once the connection is established;
-    # whatsmeow keeps the socket alive and auto-reconnects internally. A real
-    # failure surfaces as an exception on the task.
-    if connect_task in done:
-        exc = connect_task.exception()
-        if exc is not None:
-            raise exc
-    # Connected and healthy — park here until a fatal event fires, so the
-    # supervised task stays alive without re-running connect().
-    rt.health["whatsapp"] = "connected"
-    await fatal.wait()
-    connect_task.cancel()
+    # neonize's connect() returns the SESSION task; it completes only when the
+    # connection dies. Keep it so its exception (a real connect failure) is
+    # surfaced, never await it for readiness.
+    session_task = await client.connect()
+    try:
+        deadline = time.monotonic() + CONNECT_TIMEOUT_S
+        while not session.connected.is_set() and not session.fatal.is_set():
+            if time.monotonic() > deadline:
+                if await _is_connected(client) and not await _is_logged_in(client):
+                    rt.audit.note("wa_not_paired")
+                    session.terminal = "NOT PAIRED — send /wa_pair in the control chat"
+                    rt.health["whatsapp"] = session.terminal
+                    return
+                if session_task is not None and session_task.done() and session_task.exception():
+                    raise session_task.exception()  # type: ignore[misc]
+                raise RuntimeError(f"no ConnectedEv within {CONNECT_TIMEOUT_S}s")
+            await asyncio.sleep(_CONNECT_POLL_S)
+        if session.fatal.is_set():
+            return
+        # Connected. Watch the socket until a fatal event ends the session.
+        lost_checks = 0
+        while not session.fatal.is_set():
+            try:
+                await asyncio.wait_for(session.fatal.wait(), timeout=WATCHDOG_S)
+                break
+            except TimeoutError:
+                pass
+            try:
+                up = await _is_connected(client)
+            except Exception:  # noqa: BLE001 — the bridge call itself failed
+                up = False
+            if up:
+                if lost_checks:
+                    lost_checks = 0
+                    rt.health["whatsapp"] = "connected"
+                    rt.audit.note("wa_socket_back")
+                continue
+            lost_checks += 1
+            if lost_checks == 2:
+                rt.health["whatsapp"] = "disconnected (socket down; whatsmeow reconnecting)"
+                rt.audit.note("wa_socket_lost")
+                from ... import alerts
+
+                await alerts.alert_owner(
+                    rt, "whatsapp:socket",
+                    "⚠️ WhatsApp socket is down; waiting for whatsmeow to reconnect.")
+    finally:
+        await _release(rt, client)
+        if session.terminal:
+            rt.health["whatsapp"] = session.terminal
+        elif session.fatal.is_set():
+            rt.health["whatsapp"] = "disconnected"
+        if session_task is not None and not session_task.done():
+            session_task.cancel()
