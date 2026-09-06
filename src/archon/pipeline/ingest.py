@@ -150,25 +150,32 @@ async def _describe_images(rt: Runtime, router, batch: list[InboundMessage],
     return notes
 
 
-async def _send_reply_now(rt: Runtime, platform: str, chat_id: str,
+async def _send_reply_now(rt: Runtime, store: TenantScope, platform: str, chat_id: str,
                           chat_kind: str, text: str,
                           reply_to: str | None = None) -> None:
     """Send an auto-reply straight to the chat as the owner (no confirm gate —
     auto-reply chats are the owner's explicit opt-in). reply_to quotes/tags the
-    message being answered (Telegram)."""
+    message being answered (Telegram).
+
+    Goes through the same registered executors the confirm gate uses, with the
+    batch's tenant scope — the previous version called them with two arguments
+    after they had grown a third, so every immediate auto-reply raised
+    TypeError and was swallowed as auto_reply_send_failed."""
+    from . import confirm
+
     if platform == "tg":
-        from ..tools.telegram import _send_group_executor, _send_private_executor
-
-        executor = _send_private_executor if chat_kind == "private" else _send_group_executor
-        await executor(rt, {"chat_id": chat_id, "text": text, "reply_to": reply_to})
+        kind = "tg.send_private" if chat_kind == "private" else "tg.send_group"
+        payload = {"chat_id": chat_id, "text": text, "reply_to": reply_to}
     elif platform == "wa":
-        from ..tools.whatsapp import _send_executor
-
-        await _send_executor(rt, {"chat_jid": chat_id, "text": text})
+        kind = "wa.send"
+        payload = {"chat_jid": chat_id, "text": text}
+    else:
+        raise NotImplementedError(f"auto-reply cannot send on platform {platform!r}")
+    await confirm.execute(rt, kind, payload, store)
 
 
 async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
-                      chat_row, persona_block: str) -> None:
+                      chat_row, persona_block: str, store: TenantScope) -> None:
     """The 'answering agent': a cheap, TOOL-LESS model writes a short reply to
     EACH incoming message and it's sent to the chat. Unlike the smart agent it
     never calls tools — it just talks — so it can answer everyone in a group
@@ -217,11 +224,16 @@ async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
                 due_at=due.strftime("%Y-%m-%d %H:%M:%S"), reply_to=m.msg_id)
         else:
             try:
-                await _send_reply_now(rt, first.platform, first.chat_id,
+                await _send_reply_now(rt, store, first.platform, first.chat_id,
                                       first.chat_kind, reply, reply_to=m.msg_id)
+            except (TypeError, AttributeError, KeyError, NotImplementedError) as exc:
+                # A programming error, not a transport failure: make it loud.
+                rt.audit.note("tool_bug", where="auto_reply_send", chat=first.chat_id,
+                              error=repr(exc)[:200], tenant_id=first.tenant_id)
+                raise
             except Exception as exc:  # noqa: BLE001
                 rt.audit.note("auto_reply_send_failed", chat=first.chat_id,
-                              error=repr(exc)[:150])
+                              error=repr(exc)[:150], tenant_id=first.tenant_id)
                 continue
         sent += 1
     rt.audit.note("auto_reply_done", chat=first.chat_id, replied=sent, batch=len(batch),
@@ -273,7 +285,7 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     # The dumb "answering agent" (cheap, tool-less) writes a reply to EACH
     # sender. The smart tool-agent below runs only for calendar/actions.
     if verdict.action in ("respond", "both") and auto_reply:
-        await _auto_reply(rt, router, batch, chat_row, persona_block)
+        await _auto_reply(rt, router, batch, chat_row, persona_block, store)
     if verdict.action not in ("calendar", "both"):
         return
 

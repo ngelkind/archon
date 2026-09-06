@@ -880,12 +880,17 @@ def chat_list_capture_armed(store: Store) -> list[sqlite3.Row]:
 def message_cache_outgoing(store: Store, *, chat_pk: int, platform: str,
                            chat_id: str, msg_id: str, source: str,
                            text: str | None) -> None:
-    """Cache a message WE sent, so history/edit/delete tracking sees it too."""
+    """Cache a message WE sent, so history/edit/delete tracking sees it too.
+
+    ``ON CONFLICT ... DO NOTHING`` names the duplicate-key case explicitly; a
+    plain ``INSERT OR IGNORE`` also swallows NOT NULL violations, which is how
+    a raw insert without ``tenant_id`` silently cached nothing for weeks."""
     sc = as_scope(store)
     sc.execute(
-        "INSERT OR IGNORE INTO messages (tenant_id, chat_pk, platform, chat_id, msg_id, "
+        "INSERT INTO messages (tenant_id, chat_pk, platform, chat_id, msg_id, "
         "source, sender_id, is_from_me, ts, text) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'me', 1, datetime('now'), ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, 'me', 1, datetime('now'), ?) "
+        "ON CONFLICT(tenant_id, platform, chat_id, msg_id) DO NOTHING",
         (sc.tenant_id, chat_pk, platform, chat_id, msg_id, source, text),
     )
 

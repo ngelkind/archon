@@ -119,12 +119,18 @@ async def request_confirmation(
     return action_id
 
 
-async def _execute(rt: Runtime, kind: str, payload: dict[str, Any],
-                   store: Any = None) -> str:
+async def execute(rt: Runtime, kind: str, payload: dict[str, Any],
+                  store: Any = None) -> str:
+    """Run the registered executor for ``kind`` under ``store`` (the tenant
+    scope the action belongs to). An unknown kind RAISES: returning an error
+    string here let the scheduler record 'sent' for a message nothing sent."""
     executor = _EXECUTORS.get(kind)
     if executor is None:
-        return f"no executor registered for {kind}"
+        raise LookupError(f"no executor registered for {kind}")
     return await executor(rt, payload, store if store is not None else rt.db)
+
+
+_execute = execute  # older call sites
 
 
 async def resolve_action(

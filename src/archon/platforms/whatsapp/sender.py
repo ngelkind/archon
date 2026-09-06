@@ -38,7 +38,7 @@ def _to_jid(raw: str) -> Any:
     return build_jid(user, server or "s.whatsapp.net")
 
 
-async def send_text(rt: Runtime, chat_jid: str, text: str) -> str:
+async def send_text(rt: Runtime, chat_jid: str, text: str, store: Any = None) -> str:
     from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 
     client = _client(rt)
@@ -59,25 +59,32 @@ async def send_text(rt: Runtime, chat_jid: str, text: str) -> str:
         pass
     resp = await client.send_message(target, text)
     msg_id = getattr(resp, "ID", "") or "sent"
-    chat_pk = repo.chat_upsert(rt.db, "wa", chat_jid, None,
-                               "group" if chat_jid.endswith("@g.us") else "private")
-    rt.db.execute(
-        "INSERT OR IGNORE INTO messages (chat_pk, platform, chat_id, msg_id, source, "
-        "sender_id, is_from_me, ts, text) VALUES (?, 'wa', ?, ?, 'wa', 'me', 1, "
-        "datetime('now'), ?)",
-        (chat_pk, chat_jid, msg_id, text),
-    )
+    _cache_outgoing(rt, store, chat_jid, str(msg_id), text)
     return str(msg_id)
 
 
+def _cache_outgoing(rt: Runtime, store: Any, chat_jid: str, msg_id: str,
+                    text: str | None) -> None:
+    """Record our own send so deletion cards have a 'before' and wa_get_history
+    shows both sides. Goes through the scoped repo accessor: the raw INSERT
+    this replaced omitted the NOT NULL tenant_id and was skipped silently."""
+    scope = store if store is not None else rt.db
+    chat_pk = repo.chat_upsert(scope, "wa", chat_jid, None,
+                               "group" if chat_jid.endswith("@g.us") else "private")
+    repo.message_cache_outgoing(scope, chat_pk=chat_pk, platform="wa", chat_id=chat_jid,
+                                msg_id=msg_id, source="wa", text=text)
+
+
 async def send_image(rt: Runtime, chat_jid: str, image_path: str,
-                     caption: str | None = None) -> str:
+                     caption: str | None = None, store: Any = None) -> str:
     client = _client(rt)
     target = _to_jid(chat_jid)
     lo, hi = _delays(rt)
     await asyncio.sleep(random.uniform(lo, hi))
     resp = await client.send_image(target, image_path, caption=caption or "")
-    return str(getattr(resp, "ID", "") or "sent")
+    msg_id = str(getattr(resp, "ID", "") or "sent")
+    _cache_outgoing(rt, store, chat_jid, msg_id, caption or "[image]")
+    return msg_id
 
 
 async def mark_read(rt: Runtime, chat_jid: str, message_ids: list[str]) -> None:

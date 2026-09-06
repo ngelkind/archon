@@ -93,7 +93,9 @@ async def _policy_send(ctx: ToolContext, kind: str, payload: dict[str, Any]) -> 
         if ctx.extras.get("platform") != "tg" or ctx.extras.get("chat_id") != payload["chat_id"]:
             return json.dumps({"error": "inbound runs may only send to the originating chat"})
 
-    policy = row["send_policy"] if row else "confirm"
+    from .settings_ import effective_send_policy
+
+    policy = effective_send_policy(row)
 
     if (policy == "free" and ctx.scope == "inbound" and row is not None
             and payload.get("text") and not payload.get("schedule_iso")):

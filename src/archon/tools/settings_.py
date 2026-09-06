@@ -10,6 +10,16 @@ from ..db import repo
 from .registry import Registry, ToolContext
 
 
+#: The only send policies the gates understand. Anything else is treated as
+#: "confirm" by the send paths — a policy nobody recognises must fail CLOSED.
+SEND_POLICIES = frozenset({"free", "confirm"})
+
+
+def effective_send_policy(row) -> str:
+    policy = row["send_policy"] if row is not None else None
+    return policy if policy in SEND_POLICIES else "confirm"
+
+
 def _find_chat(store, platform: str | None, approx_name: str) -> list[dict]:
     """Fuzzy-match a chat by name across the chats registry."""
     rows = repo.chat_list(store, platform=platform)
@@ -130,6 +140,11 @@ def register(registry: Registry) -> None:
     )
     async def send_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                               policy: str) -> str:
+        if policy not in SEND_POLICIES:
+            # The JSON-schema enum is advisory to the model; an unknown value
+            # written here would have bypassed the confirm gate entirely.
+            return json.dumps({"error": f"policy must be one of {sorted(SEND_POLICIES)}",
+                               "got": policy})
         row = _get_chat_or_error(ctx.store, platform, chat_id)
         repo.chat_set_field(ctx.store, row["id"], "send_policy", policy)
         return json.dumps({"ok": True, "chat": row["name"] or chat_id, "send_policy": policy})

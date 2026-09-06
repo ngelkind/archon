@@ -16,9 +16,9 @@ from .registry import Registry, ToolContext
 async def _send_executor(rt: Runtime, payload: dict[str, Any], store) -> str:
     if payload.get("image_path"):
         msg_id = await sender.send_image(rt, payload["chat_jid"], payload["image_path"],
-                                         payload.get("text"))
+                                         payload.get("text"), store=store)
     else:
-        msg_id = await sender.send_text(rt, payload["chat_jid"], payload["text"])
+        msg_id = await sender.send_text(rt, payload["chat_jid"], payload["text"], store=store)
     return f"WhatsApp message to {payload.get('chat_name') or payload['chat_jid']} sent ({msg_id})"
 
 
@@ -36,7 +36,9 @@ async def _send_or_confirm(ctx: ToolContext, chat_jid: str, text: str | None,
         if origin != chat_jid or ctx.extras.get("platform") != "wa":
             return json.dumps({"error": "inbound runs may only send to the originating chat"})
 
-    policy = row["send_policy"] if row else "confirm"
+    from .settings_ import effective_send_policy
+
+    policy = effective_send_policy(row)
     payload = {"chat_jid": chat_jid, "text": text, "image_path": image_path,
                "chat_name": chat_name}
 
