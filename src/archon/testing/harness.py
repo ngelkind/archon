@@ -123,10 +123,16 @@ class Harness:
             h.start_subsystem(name)
         return h
 
-    def start_subsystem(self, name: str) -> asyncio.Task:
-        factory = self._subsystem_factory(name)
-        task = asyncio.create_task(app_module._supervise(self.rt, name, factory),
-                                   name=f"harness:{name}")
+    def start_subsystem(self, name: str, *, backoff_s: float = 0.05) -> asyncio.Task:
+        return self.supervise(name, self._subsystem_factory(name), backoff_s=backoff_s)
+
+    def supervise(self, name: str, factory: Callable[[], Awaitable[None]], *,
+                  backoff_s: float = 0.05) -> asyncio.Task:
+        """Run any coroutine factory under the REAL supervisor (crash loop,
+        alerts, deliberate/terminal states), with a short backoff."""
+        task = asyncio.create_task(
+            app_module._supervise(self.rt, name, factory, backoff_s=backoff_s),
+            name=f"harness:{name}")
         self.tasks[name] = task
         return task
 
@@ -169,6 +175,14 @@ class Harness:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 — teardown
                 pass
+        for key in ("notifier", "control_bot"):
+            bot = self.rt.clients.get(key)
+            session = getattr(bot, "session", None)
+            if session is not None:
+                try:
+                    await session.close()
+                except Exception:  # noqa: BLE001 — teardown
+                    pass
         if self.bot_api is not None:
             await self.bot_api.stop()
         if self._debounce_backup is not None:

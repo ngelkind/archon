@@ -9,6 +9,7 @@ single-subsystem death without taking the others down.
 from __future__ import annotations
 
 import asyncio
+import time
 import traceback
 
 from .bus import Bus
@@ -102,30 +103,92 @@ def _set_health(rt: Runtime, name: str, state: str) -> None:
         rt.events.publish("health.change", subsystem=name, state=state)
 
 
-async def _supervise(rt: Runtime, name: str, coro_factory) -> None:
-    backoff = 5
+#: Health strings a subsystem leaves behind when it stops ON PURPOSE. A clean
+#: return with one of these is "correctly idle": no restart, no alert.
+DELIBERATE_PREFIXES = ("disabled", "no session", "not configured", "no token", "watching")
+#: Health strings for a session that is over and must NOT be restarted into
+#: (a restart would fight a ban or a replaced stream). The owner is told once.
+TERMINAL_PREFIXES = ("LOGGED OUT", "TEMPORARY BAN", "STREAM REPLACED", "SESSION INVALID")
+#: A subsystem that stayed up this long before failing gets its backoff and
+#: failure count reset — the failure is fresh, not the same crash loop.
+_HEALTHY_S = 600.0
+_ALERT_AFTER = 2
+
+
+def _starts_with_any(state: str, prefixes: tuple[str, ...]) -> bool:
+    return any(state.startswith(p) for p in prefixes)
+
+
+async def _supervise(rt: Runtime, name: str, coro_factory, *, backoff_s: float = 5.0) -> None:
+    """Run one subsystem forever: crash -> log -> backoff -> restart, and TELL
+    THE OWNER after repeated failures (the second consecutive one, then at most
+    hourly per subsystem while it keeps failing).
+
+    A clean return is not automatically fine. If the subsystem left a
+    deliberate state ("disabled (...)", "no session (...)") it is idle by
+    configuration and stays down quietly. If it left a terminal state ("LOGGED
+    OUT", "TEMPORARY BAN") it stays down and the owner is told. Anything else —
+    it simply returned while claiming to be running — is treated exactly like
+    a crash: audited, restarted with backoff, alerted. That last case is how
+    the Telethon userbot used to die for the rest of the process with only a
+    health string as evidence.
+    """
+    from . import alerts
+
+    backoff = backoff_s
+    failures = 0
+
+    async def _failed(kind: str, detail: str) -> None:
+        nonlocal failures, backoff
+        failures += 1
+        if failures >= _ALERT_AFTER:
+            await alerts.alert_owner(
+                rt, f"subsystem:{name}",
+                f"⚠️ {name} {kind} {failures}× in a row: {detail[:200]}\n"
+                f"/status for details; retrying in {int(backoff)}s.",
+            )
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, _MAX_BACKOFF_S)
+
     while True:
+        started = time.monotonic()
         try:
             _set_health(rt, name, "running")
             await coro_factory()
-            # A clean return means the subsystem shut itself down deliberately.
-            # If it left its own explanation ("not configured (…)"), keep it —
-            # overwriting with a bare "stopped" loses the one thing an operator
-            # needs to tell "correctly idle" from "silently broken".
-            if rt.health.get(name) == "running":
-                _set_health(rt, name, "stopped")
-            return
         except asyncio.CancelledError:
             _set_health(rt, name, "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 — supervisor must survive anything
+            if time.monotonic() - started > _HEALTHY_S:
+                failures, backoff = 0, backoff_s
             _set_health(rt, name, f"crashed: {type(exc).__name__}")
             rt.audit.note(
                 "subsystem_crash", subsystem=name, error=repr(exc),
-                trace=traceback.format_exc()[-2000:],
+                trace=traceback.format_exc()[-2000:], consecutive=failures + 1,
             )
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, _MAX_BACKOFF_S)
+            await _failed("crashed", f"{type(exc).__name__}: {exc}")
+            continue
+
+        state = rt.health.get(name, "")
+        if state != "running" and _starts_with_any(state, DELIBERATE_PREFIXES):
+            rt.audit.note("subsystem_idle", subsystem=name, state=state)
+            return
+        if state != "running" and _starts_with_any(state, TERMINAL_PREFIXES):
+            rt.audit.note("subsystem_terminal", subsystem=name, state=state)
+            await alerts.alert_owner(
+                rt, f"subsystem:{name}:terminal",
+                f"⛔ {name} is down: {state}. It will not restart on its own.", force=True,
+            )
+            return
+        # Returned while claiming to run (or with an unrecognised state): a
+        # quiet death. Same treatment as a crash.
+        if time.monotonic() - started > _HEALTHY_S:
+            failures, backoff = 0, backoff_s
+        if state == "running":
+            _set_health(rt, name, "stopped unexpectedly")
+        rt.audit.note("subsystem_stopped", subsystem=name, state=rt.health.get(name, ""),
+                      consecutive=failures + 1)
+        await _failed("stopped unexpectedly", rt.health.get(name, ""))
 
 
 async def main() -> None:

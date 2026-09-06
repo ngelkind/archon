@@ -226,6 +226,11 @@ async def run(rt: Runtime, *, handle_signals: bool = True,
     rt.health["control_bot"] = "polling"
     me = await bot.get_me()
     rt.audit.note("control_bot_started", username=me.username)
+    # Alerts raised before this bot existed (WhatsApp starts first) are
+    # queued by alerts.py; deliver them now that there is a channel.
+    from ... import alerts
+
+    await alerts.flush_queued(rt)
     # Register the command menu so clients (esp. Desktop) show the "/" list.
     from aiogram.types import BotCommand
 

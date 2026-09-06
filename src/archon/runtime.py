@@ -37,6 +37,8 @@ class Runtime:
     started_at: float = field(default_factory=time.time)
     # Subsystem health, shown by /status: name -> short state string.
     health: dict[str, str] = field(default_factory=dict)
+    # Owner-alert bookkeeping (alerts.py): last-sent per key + pre-bot queue.
+    alert_state: dict = field(default_factory=dict)
     # Wired in app.build_runtime after construction (circular-import avoidance):
     # llm.router.Router, tools.registry.Registry, and the control-bot text
     # handler. Typed as Any deliberately.
