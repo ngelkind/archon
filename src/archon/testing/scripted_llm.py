@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from ..llm.base import ChatMessage, LLMResult, ProviderError, ToolCall, ToolSpec, Usage
 
@@ -97,7 +98,7 @@ def _result(req: Request, *, text: str = "", tool_calls: list[ToolCall] | None =
 
 
 def _pattern(when: str | None) -> re.Pattern[str] | None:
-    return re.compile(when, re.S) if when else None
+    return re.compile(when, re.DOTALL) if when else None
 
 
 class ScriptedProvider:
@@ -116,7 +117,7 @@ class ScriptedProvider:
     # --- authoring helpers ------------------------------------------------
 
     def triage(self, action: str, *, confidence: float = 0.9, reason: str = "scripted",
-               when: str | None = None, once: bool = True) -> "ScriptedProvider":
+               when: str | None = None, once: bool = True) -> ScriptedProvider:
         """Answer the cheap-tier classifier with a verdict."""
         payload = json.dumps({"action": action, "confidence": confidence, "reason": reason})
         self.steps.append(Step(
@@ -126,7 +127,7 @@ class ScriptedProvider:
         return self
 
     def reply(self, text: str, *, tier: str = "cheap", when: str | None = None,
-              once: bool = True) -> "ScriptedProvider":
+              once: bool = True) -> ScriptedProvider:
         """A plain text answer (auto-reply drafts, vision descriptions, final text)."""
         self.steps.append(Step(
             make=lambda req: _result(req, text=text), tier=tier,
@@ -135,7 +136,7 @@ class ScriptedProvider:
         return self
 
     def tool_call(self, name: str, *, when: str | None = None, once: bool = True,
-                  **args: Any) -> "ScriptedProvider":
+                  **args: Any) -> ScriptedProvider:
         """The strong-tier agent decides to call ``name`` with ``args``."""
         def make(req: Request) -> LLMResult:
             self._ids += 1
@@ -149,11 +150,11 @@ class ScriptedProvider:
         return self
 
     def final(self, text: str = "done", *, when: str | None = None,
-              once: bool = True) -> "ScriptedProvider":
+              once: bool = True) -> ScriptedProvider:
         """The strong-tier agent's closing text after (or instead of) tool calls."""
         return self.reply(text, tier="strong", when=when, once=once)
 
-    def raw(self, make: Callable[[Request], LLMResult], **kw: Any) -> "ScriptedProvider":
+    def raw(self, make: Callable[[Request], LLMResult], **kw: Any) -> ScriptedProvider:
         self.steps.append(Step(make=make, **kw))
         return self
 

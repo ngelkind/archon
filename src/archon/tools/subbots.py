@@ -25,10 +25,10 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def subbot_register(ctx: ToolContext, token: str, platform_scope: str) -> str:
-        from aiogram import Bot
+        from ..platforms.telegram.botfactory import make_bot
 
         token = token.strip()
-        bot = Bot(token=token)
+        bot = make_bot(ctx.rt, token, parse_mode=None)
         try:
             me = await bot.get_me()  # validates the token against Telegram
         except Exception as exc:  # noqa: BLE001

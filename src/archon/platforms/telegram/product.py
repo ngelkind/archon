@@ -27,13 +27,13 @@ from __future__ import annotations
 import html
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from ...db.tenancy import OWNER_TENANT_ID
 from ...integrations import telegram as tg_integration
 from ...runtime import Runtime
+from .botfactory import make_bot
 
 _LINK_HELP = (
     "Open the Archon app, go to Settings → Telegram, and tap <b>Link Telegram</b>. "
@@ -106,10 +106,7 @@ def register(dp: Dispatcher, rt: Runtime) -> None:
 
 
 def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
-    bot = Bot(
-        token=rt.settings.product_telegram_bot_token,
-        default=DefaultBotProperties(parse_mode="HTML"),
-    )
+    bot = make_bot(rt, rt.settings.product_telegram_bot_token)
     dp = Dispatcher()
     register(dp, rt)
     # Product users' Business updates arrive on THIS bot, so the business

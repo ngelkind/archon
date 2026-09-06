@@ -19,9 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .. import app as app_module
 from ..bus import Bus
@@ -50,6 +51,7 @@ class Harness:
         self.tasks: dict[str, asyncio.Task] = {}
         self.telethon: Any = None
         self.neonize: Any = None
+        self.bot_api: Any = None
         self.ledger: Ledger | None = None
         self._repo_originals: dict[str, object] | None = None
         self._debounce_backup: dict[str, float] | None = None
@@ -70,11 +72,12 @@ class Harness:
         record_repo: bool = False,
         telethon: Any = None,
         neonize: Any = None,
-    ) -> "Harness":
+        bot_api: Any = None,
+    ) -> Harness:
         data = tmp_path / "data"
         secrets = tmp_path / "secrets"
         overrides = {
-            "telegram_bot_token": "test-token",
+            "telegram_bot_token": "8000000001:AAtest-token-for-the-fake-bot-api-server",
             "telegram_owner_id": 1,
             "archon_data": data,
             "archon_secrets": secrets,
@@ -84,6 +87,12 @@ class Harness:
             "api_token_pepper": "test-pepper",
         }
         overrides.update(settings or {})
+        if bot_api is True:
+            from .fake_bot_api import FakeBotApi
+
+            bot_api = await FakeBotApi().start()
+        if bot_api is not None:
+            overrides.setdefault("telegram_api_base", bot_api.base_url)
         s = Settings(_env_file=None, **overrides)
         s.ensure_dirs()
         db = Db(s.db_path)
@@ -101,6 +110,7 @@ class Harness:
         h = cls(rt, llm, tmp_path)
         h.telethon = telethon
         h.neonize = neonize
+        h.bot_api = bot_api
         h._debounce_backup = dict(ingest._DEBOUNCE_S)
         for key in ingest._DEBOUNCE_S:
             ingest._DEBOUNCE_S[key] = debounce_s
@@ -140,6 +150,12 @@ class Harness:
             if self.neonize is None:
                 raise ValueError("start the harness with neonize=FakeAClient(...)")
             return lambda: wa_client.run(rt, client=self.neonize)
+        if name == "control_bot":
+            from ..platforms.telegram import control
+
+            if self.bot_api is None:
+                raise ValueError("start the harness with bot_api=True")
+            return lambda: control.run(rt, handle_signals=False, polling_timeout=1)
         raise ValueError(f"harness cannot start subsystem {name!r} yet")
 
     async def stop(self) -> None:
@@ -153,6 +169,8 @@ class Harness:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 — teardown
                 pass
+        if self.bot_api is not None:
+            await self.bot_api.stop()
         if self._debounce_backup is not None:
             ingest._DEBOUNCE_S.update(self._debounce_backup)
         if self._repo_originals is not None:
@@ -164,7 +182,7 @@ class Harness:
             )
             raise AssertionError(f"unscripted LLM call(s) during the scenario: {details}")
 
-    async def __aenter__(self) -> "Harness":
+    async def __aenter__(self) -> Harness:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -174,6 +192,20 @@ class Harness:
 
     async def publish(self, msg: InboundMessage) -> None:
         await self.rt.bus.publish(msg)
+
+    async def owner_says(self, text: str, *, wait_reply: bool = True,
+                         timeout: float = 5.0) -> str | None:
+        """Type ``text`` into the control chat as the owner; return the bot's
+        next reply text (or None when ``wait_reply`` is False)."""
+        before = len(self.bot_api.calls_of("sendMessage", chat_id=self.rt.settings.telegram_owner_id))
+        self.bot_api.owner_message(text, chat_id=self.rt.settings.telegram_owner_id,
+                                   from_id=self.rt.settings.telegram_owner_id)
+        if not wait_reply:
+            return None
+        call = await self.bot_api.wait_for_call(
+            "sendMessage", chat_id=self.rt.settings.telegram_owner_id,
+            count=before + 1, timeout=timeout)
+        return call.data.get("text", "")
 
     def make_message(
         self,

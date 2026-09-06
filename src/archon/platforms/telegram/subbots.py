@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 import html
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
+from aiogram import Dispatcher, F
 from aiogram.types import Message
 
 from ...db import repo
 from ...runtime import Runtime
+from .botfactory import make_bot
 from ...tools.registry import Registry, Scope, ToolContext
 
 # Tools visible per platform scope (prefix match), plus a common set.
@@ -60,7 +60,7 @@ async def _run_subbot(rt: Runtime, row_id: int, token: str, username: str,
     from ...llm.base import ProviderError
     from ...llm.router import Router
 
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = make_bot(rt, token)
     dp = Dispatcher()
     owner_id = rt.settings.telegram_owner_id
     chat_pk = repo.chat_upsert(rt.db, "tg", f"subbot:{username}",

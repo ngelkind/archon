@@ -13,21 +13,18 @@ from __future__ import annotations
 import html
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.types import Message
 
 from ...db import repo
 from ...runtime import Runtime
+from .botfactory import make_bot
 
 _PAIR_TTL_MINUTES = 10
 
 
 def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
-    bot = Bot(
-        token=rt.settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode="HTML"),
-    )
+    bot = make_bot(rt, rt.settings.telegram_bot_token)
     dp = Dispatcher()
     owner_id = rt.settings.telegram_owner_id
 
@@ -170,7 +167,7 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
         except Exception as exc:  # noqa: BLE001
             await message.answer(f"⚠️ Import failed: {type(exc).__name__}: {exc}")
 
-    # Catch-all: any owner text without a command goes to the agent loop.
+    # Any owner text without a command goes to the agent loop.
     @dp.message(F.text & ~F.text.startswith("/"))
     async def owner_text(message: Message) -> None:
         if not is_owner(message):
@@ -182,10 +179,34 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
         else:
             await handler(message)  # type: ignore[operator]
 
+    # Terminal catch-all, registered LAST (aiogram matches in registration
+    # order): a guessed command or a photo/voice/sticker used to fall through
+    # every filter and be dropped without a reply or an audit record — the
+    # owner typed something and nothing happened.
+    @dp.message()
+    async def owner_other(message: Message) -> None:
+        if not is_owner(message):
+            rt.audit.note("non_owner_message", sender=message.from_user.id if message.from_user else None)
+            return
+        if message.text and message.text.startswith("/"):
+            rt.audit.note("unknown_command", text=message.text[:64])
+            await message.answer(
+                "Unknown command. Try /help, or just tell me in plain words what you want "
+                "(e.g. \"whitelist my chat with Dana\")."
+            )
+            return
+        kind = getattr(message.content_type, "value", message.content_type)
+        rt.audit.note("unsupported_owner_message", content_type=str(kind))
+        await message.answer(
+            "I can read text here (and a Google Contacts .csv export). "
+            "Photos, voice notes and stickers are not supported yet."
+        )
+
     return bot, dp
 
 
-async def run(rt: Runtime) -> None:
+async def run(rt: Runtime, *, handle_signals: bool = True,
+              polling_timeout: int = 10) -> None:
     from ...pipeline import confirm
     from . import business
 
@@ -201,10 +222,7 @@ async def run(rt: Runtime) -> None:
     # aiohttp session as part of start_polling's lifecycle, which breaks
     # sends made from other tasks ("Connector is closed"); this one is never
     # polled, so its session stays open.
-    rt.clients["notifier"] = Bot(
-        token=rt.settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode="HTML"),
-    )
+    rt.clients["notifier"] = make_bot(rt, rt.settings.telegram_bot_token)
     rt.health["control_bot"] = "polling"
     me = await bot.get_me()
     rt.audit.note("control_bot_started", username=me.username)
@@ -226,6 +244,8 @@ async def run(rt: Runtime) -> None:
     try:
         await dp.start_polling(
             bot,
+            handle_signals=handle_signals,
+            polling_timeout=polling_timeout,
             allowed_updates=[
                 "message",
                 "callback_query",

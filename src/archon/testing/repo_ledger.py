@@ -10,8 +10,8 @@ can be asserted on afterwards.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from ..db import repo
 from ..db.tenancy import Db, TenantScope

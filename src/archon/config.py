@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     # --- Telegram control bot (required for anything to work) ---
     telegram_bot_token: str = ""
+    # Bot API base URL override. Empty = https://api.telegram.org. The e2e
+    # harness points every Bot at a local fake server it then polls for real;
+    # never set this in production.
+    telegram_api_base: str = ""
     telegram_owner_id: int = 0  # numeric Telegram user id of the owner
     tg_log_channel_id: int | None = None  # configurable at runtime via settings table too
 
