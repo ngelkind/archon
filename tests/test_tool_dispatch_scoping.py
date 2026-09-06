@@ -67,40 +67,16 @@ NETWORK_TOOLS = frozenset({"web_fetch", "download_video", "attach_image_from_url
 
 
 # --- the ledger --------------------------------------------------------------
+#
+# The recorder itself lives in archon.testing.repo_ledger so the end-to-end
+# harness and the live probe runner share it; this fixture only binds it to the
+# test's monkeypatch lifetime.
 
-class _Ledger:
-    """Records the store handed to every repo call during one dispatch."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, object]] = []
-
-    def record(self, fn_name: str, store: object) -> None:
-        self.calls.append((fn_name, store))
-
-    @property
-    def offenders(self) -> list[str]:
-        """Repo calls whose store is neither a Db nor a TenantScope.
-
-        That is the whole bug class: a Runtime, a ToolContext, or anything else
-        reaching the database layer where a scope belongs.
-        """
-        return [
-            f"repo.{name}(<{type(store).__name__}>)"
-            for name, store in self.calls
-            if not isinstance(store, (Db, TenantScope))
-        ]
-
-    def tenants(self) -> set[int]:
-        return {
-            s.tenant_id for _, s in self.calls if isinstance(s, TenantScope)
-        }
-
-    def reached_repo(self) -> bool:
-        return bool(self.calls)
+from archon.testing.repo_ledger import Ledger as _Ledger, unwrap_repo, wrap_repo  # noqa: E402
 
 
 @pytest.fixture
-def ledger(monkeypatch) -> _Ledger:
+def ledger() -> _Ledger:
     """Wrap every public repo function so its store argument is recorded.
 
     Wrapping the module wholesale rather than naming functions individually is
@@ -108,20 +84,11 @@ def ledger(monkeypatch) -> _Ledger:
     chance of the list going stale the way a hand-maintained one would.
     """
     led = _Ledger()
-    for name, fn in list(vars(repo).items()):
-        if name.startswith("_") or not inspect.isfunction(fn):
-            continue
-        if not fn.__module__.endswith("repo"):
-            continue          # re-exported helper, not a repo function
-
-        def make(fn_name=name, real=fn):
-            def wrapper(store=None, *args, **kwargs):
-                led.record(fn_name, store)
-                return real(store, *args, **kwargs)
-            return wrapper
-
-        monkeypatch.setattr(repo, name, make())
-    return led
+    originals = wrap_repo(led)
+    try:
+        yield led
+    finally:
+        unwrap_repo(originals)
 
 
 # --- fixtures ----------------------------------------------------------------
