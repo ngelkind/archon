@@ -48,6 +48,7 @@ class Harness:
         self.llm = llm
         self.tmp = tmp
         self.tasks: dict[str, asyncio.Task] = {}
+        self.telethon: Any = None
         self.ledger: Ledger | None = None
         self._repo_originals: dict[str, object] | None = None
         self._debounce_backup: dict[str, float] | None = None
@@ -66,6 +67,7 @@ class Harness:
         subsystems: tuple[str, ...] = ("pipeline",),
         debounce_s: float = 0.02,
         record_repo: bool = False,
+        telethon: Any = None,
     ) -> "Harness":
         data = tmp_path / "data"
         secrets = tmp_path / "secrets"
@@ -95,6 +97,7 @@ class Harness:
         repo.setting_set(rt.db, f"llm.model.{PROVIDER_NAME}.strong", STRONG_MODEL)
 
         h = cls(rt, llm, tmp_path)
+        h.telethon = telethon
         h._debounce_backup = dict(ingest._DEBOUNCE_S)
         for key in ingest._DEBOUNCE_S:
             ingest._DEBOUNCE_S[key] = debounce_s
@@ -122,6 +125,12 @@ class Harness:
             from ..scheduler import loop as scheduler_loop
 
             return lambda: scheduler_loop.run(rt)
+        if name == "tg_userbot":
+            from ..platforms.telegram import userbot
+
+            if self.telethon is None:
+                raise ValueError("start the harness with telethon=FakeTelethonClient(...)")
+            return lambda: userbot.run(rt, client=self.telethon)
         raise ValueError(f"harness cannot start subsystem {name!r} yet")
 
     async def stop(self) -> None:

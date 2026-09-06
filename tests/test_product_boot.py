@@ -145,7 +145,8 @@ def test_owner_subsystems_stand_down_cleanly(tmp_path, monkeypatch):
     assert "disabled" in health.get("control_bot", "")
     assert "no session" in health.get("whatsapp", "")
     # The userbot skips itself when unconfigured (clean return, not a crash).
-    assert health.get("tg_userbot", "").startswith("not configured")
+    assert "not configured" in health.get("tg_userbot", "")
+    assert health.get("tg_userbot", "").startswith("disabled")
     for name, state in health.items():
         assert not state.startswith("crashed:"), f"{name} crashed: {state}"
 

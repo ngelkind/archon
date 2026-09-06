@@ -7,6 +7,11 @@ logging, native scheduled messages, and sending as the owner in groups.
 Partition rule: the userbot IGNORES private chats entirely — those arrive via
 the Business connection. Belt-and-suspenders: the messages-table unique index
 would drop duplicates anyway.
+
+Structure: :func:`build_client` makes the Telethon client, :func:`wire_events`
+registers the handlers on any client-shaped object, :func:`run` is the
+supervised loop. The split exists so the handlers are reachable without a live
+MTProto connection — they had zero test coverage while nested inside ``run``.
 """
 
 from __future__ import annotations
@@ -20,6 +25,10 @@ from telethon.sessions import StringSession
 from ...db import repo
 from ...models import InboundMessage, MediaRef
 from ...runtime import Runtime
+
+HEALTH_KEY = "tg_userbot"
+NOT_CONFIGURED = "disabled (not configured: TELEGRAM_API_ID/HASH/TELETHON_SESSION)"
+SESSION_INVALID = "SESSION INVALID — re-run scripts/telethon_login.py"
 
 
 def _display_name(entity: Any) -> str | None:
@@ -54,7 +63,13 @@ def _ephemeral_kind(msg: Any) -> str | None:
     return "document"
 
 
-async def _sync_dialogs(rt: Runtime, client: TelegramClient) -> int:
+def _log_channel_id(rt: Runtime) -> str:
+    """Read per event (not once at startup): ``log_channel_set`` retargets the
+    channel at runtime and a stale closure would re-ingest the new one."""
+    return str(repo.setting_get(rt.db, "log.channel_id", rt.settings.tg_log_channel_id) or "")
+
+
+async def _sync_dialogs(rt: Runtime, client: Any) -> int:
     count = 0
     async for dialog in client.iter_dialogs(limit=500):
         # Private chats are synced too (as kind "private") so the owner's
@@ -72,27 +87,45 @@ async def _sync_dialogs(rt: Runtime, client: TelegramClient) -> int:
     return count
 
 
-async def run(rt: Runtime) -> None:
+def resolve_peerless_delete(rt: Runtime, msg_id: str) -> str | None:
+    """Which chat a ``MessageDeleted`` without a peer belongs to.
+
+    Telethon delivers ``UpdateDeleteMessages`` (private chats and legacy small
+    groups) with ``peer=None``; supergroups and channels always carry theirs.
+    The cache is the only way to attribute such a delete, and the old lookup —
+    any tg row with that message id — stamped ``deleted_at`` on whichever chat
+    happened to reuse the number (Telegram message ids are per-chat in
+    supergroups). Attribution is therefore taken only when it is unambiguous:
+    exactly one cached row, written by this userbot (private chats are the
+    Business connection's, which emits its own delete update), and not in a
+    ``-100`` chat (those never arrive peerless).
+    """
+    rows = repo.message_search(
+        rt.db,
+        "platform = 'tg' AND msg_id = ? AND source = 'userbot' "
+        "AND chat_id NOT LIKE '-100%'",
+        (msg_id,),
+    )
+    if len(rows) != 1:
+        return None
+    return str(rows[0]["chat_id"])
+
+
+def build_client(rt: Runtime) -> TelegramClient | None:
     s = rt.settings
     if not (s.telegram_api_id and s.telegram_api_hash and s.telethon_session):
-        rt.health["tg_userbot"] = "not configured (TELEGRAM_API_ID/HASH/TELETHON_SESSION)"
-        return
-
-    client = TelegramClient(
+        return None
+    return TelegramClient(
         StringSession(s.telethon_session), s.telegram_api_id, s.telegram_api_hash
     )
-    rt.clients["tg_userbot"] = client
-    await client.connect()
-    if not await client.is_user_authorized():
-        rt.health["tg_userbot"] = "SESSION INVALID — re-run scripts/telethon_login.py"
-        rt.audit.note("tg_userbot_unauthorized")
-        return
 
-    me = await client.get_me()
-    rt.audit.note("tg_userbot_started", user=me.username or me.id)
-    synced = await _sync_dialogs(rt, client)
-    rt.audit.note("tg_dialogs_synced", count=synced)
-    rt.health["tg_userbot"] = "connected"
+
+def wire_events(rt: Runtime, client: Any) -> None:
+    """Register the three inbound handlers on ``client``.
+
+    ``client`` only needs ``on(builder)`` plus the Telethon message/event
+    attribute surface the handlers read, so a fake can stand in for tests.
+    """
 
     async def _download_photo(event: Any, inbound: InboundMessage) -> None:
         row = repo.chat_get(rt.db, "tg", inbound.chat_id)
@@ -131,14 +164,17 @@ async def run(rt: Runtime) -> None:
         from ...logging_ import capture
 
         chat_id = _norm_chat_id(event.chat_id)
-        if not capture.capture_enabled(rt, "tg", chat_id, chat_kind):
-            return
         kind = _ephemeral_kind(event.message)
+        if not capture.capture_enabled(rt, "tg", chat_id, chat_kind):
+            rt.audit.note("tg_capture_disarmed", chat=chat_id, kind=kind or "document")
+            return
         try:
             rt.settings.media_dir.mkdir(parents=True, exist_ok=True)
             path = rt.settings.media_dir / f"tg-vo-{chat_id}-{event.message.id}"
             saved = await event.message.download_media(file=str(path))
             if not saved:
+                rt.audit.note("tg_capture_empty", chat=chat_id,
+                              msg_id=str(event.message.id), kind=kind or "document")
                 return
             chat = await event.get_chat()
             sender = getattr(event, "sender", None)
@@ -150,13 +186,10 @@ async def run(rt: Runtime) -> None:
         except Exception as exc:  # noqa: BLE001
             rt.audit.note("tg_capture_failed", error=repr(exc)[:200])
 
-    log_channel_id = str(
-        repo.setting_get(rt.db, "log.channel_id", rt.settings.tg_log_channel_id) or ""
-    )
-
     @client.on(events.NewMessage())
     async def on_new(event: Any) -> None:
         # The bot posts to the log channel; ignore it so we don't re-ingest.
+        log_channel_id = _log_channel_id(rt)
         if log_channel_id and _norm_chat_id(event.chat_id) == log_channel_id:
             return
         # One-time (self-destruct) media capture — works in private chats too,
@@ -177,7 +210,7 @@ async def run(rt: Runtime) -> None:
                 return
         chat = await event.get_chat()
         inbound = _to_inbound(event, chat)
-        if event.message.photo:
+        if getattr(event.message, "photo", None):
             await _download_photo(event, inbound)
         await rt.bus.publish(inbound)
 
@@ -190,20 +223,17 @@ async def run(rt: Runtime) -> None:
 
     @client.on(events.MessageDeleted())
     async def on_delete(event: Any) -> None:
-        # Channels/supergroups carry chat_id; legacy chats don't — resolve from
-        # the message cache instead of guessing.
+        # Supergroups/channels carry chat_id; private chats and legacy groups
+        # arrive with no peer at all (event.chat_id is None — and so is
+        # event.is_private, which is why the old `if event.is_private` guard
+        # could never fire). Resolve from the cache only when unambiguous.
         chat_id = _norm_chat_id(event.chat_id) if event.chat_id else None
         for msg_id in event.deleted_ids:
             resolved_chat = chat_id
             if resolved_chat is None:
-                found = repo.message_search(
-                    rt.db,
-                    "platform = 'tg' AND msg_id = ? AND deleted_at IS NULL "
-                    "ORDER BY id DESC LIMIT 1",
-                    (str(msg_id),),
-                )
-                resolved_chat = found[0]["chat_id"] if found else None
+                resolved_chat = resolve_peerless_delete(rt, str(msg_id))
             if resolved_chat is None:
+                rt.audit.note("tg_delete_unresolved", msg_id=str(msg_id))
                 continue
             await rt.bus.publish(InboundMessage(
                 platform="tg", source="userbot", chat_id=resolved_chat,
@@ -211,10 +241,46 @@ async def run(rt: Runtime) -> None:
                 ts=datetime.now(UTC), is_delete=True,
             ))
 
+
+async def run(rt: Runtime, client: Any = None) -> None:
+    """Supervised loop. ``client`` is injectable for tests; production builds
+    the real Telethon client from settings.
+
+    Failure semantics: an unconfigured userbot returns cleanly (a deliberate
+    disabled state); an invalid session or a lost connection RAISES so the
+    supervisor backs off, retries and alerts — a clean return here used to mean
+    "dead for the rest of the process with only a health string as evidence".
+    ``rt.clients["tg_userbot"]`` is present only while the client is usable:
+    it is set after authorisation succeeds and removed on the way out, so the
+    send tools' Business fallback can engage instead of hitting a dead client.
+    """
+    if client is None:
+        client = build_client(rt)
+    if client is None:
+        rt.health[HEALTH_KEY] = NOT_CONFIGURED
+        return
+
+    wire_events(rt, client)
+    await client.connect()
+    if not await client.is_user_authorized():
+        rt.health[HEALTH_KEY] = SESSION_INVALID
+        rt.audit.note("tg_userbot_unauthorized")
+        raise RuntimeError("telethon session is not authorised")
+
+    me = await client.get_me()
+    rt.audit.note("tg_userbot_started", user=me.username or me.id)
+    synced = await _sync_dialogs(rt, client)
+    rt.audit.note("tg_dialogs_synced", count=synced)
+    rt.clients["tg_userbot"] = client
+    rt.health[HEALTH_KEY] = "connected"
     try:
         await client.run_until_disconnected()
+        # Telethon gave up reconnecting: that is a failure, not a shutdown.
+        rt.audit.note("tg_userbot_disconnected")
+        raise RuntimeError("telethon disconnected")
     finally:
-        rt.health["tg_userbot"] = "disconnected"
+        rt.clients.pop("tg_userbot", None)
+        rt.health[HEALTH_KEY] = "disconnected"
 
 
 # --- helpers used by tools ----------------------------------------------------
@@ -265,22 +331,6 @@ async def send_as_owner(rt: Runtime, chat_id: str, text: str,
             pass
     msg = await client.send_message(entity, text, schedule=schedule, **kwargs)
     return str(getattr(msg, "id", "sent"))
-
-
-async def resolve_contact(rt: Runtime, ref: str) -> dict[str, Any]:
-    """Resolve a phone/@username/id to a Telegram peer and cache it as a chat so
-    it becomes findable by name. Returns {chat_id, name, username}."""
-    client: TelegramClient | None = rt.clients.get("tg_userbot")  # type: ignore[assignment]
-    if client is None:
-        raise RuntimeError("Telegram userbot is not connected")
-    entity = await _resolve_ref(client, ref)
-    chat_id = _norm_chat_id(entity.id)
-    name = _display_name(entity)
-    kind = "private" if getattr(entity, "bot", None) is not None or hasattr(entity, "phone") \
-        or getattr(entity, "first_name", None) is not None else "group"
-    repo.chat_upsert(rt.db, "tg", chat_id, name, "private" if kind == "private" else kind)
-    return {"chat_id": chat_id, "name": name,
-            "username": getattr(entity, "username", None)}
 
 
 async def refresh_dialogs(rt: Runtime) -> int:
