@@ -59,7 +59,8 @@ async def send_protected_notice(rt: Runtime, *, platform: str, chat_id: str,
     )
     from .send import throttled_send
 
-    result = await throttled_send(rt, lambda b: b.send_message(channel, caption))
+    result = await throttled_send(rt, lambda b: b.send_message(channel, caption),
+                                  kind="capture_notice")
     rt.audit.note("capture_notice_sent" if result is not None else "capture_notice_failed",
                   platform=platform, chat=chat_id)
 
@@ -94,7 +95,7 @@ async def send_capture(rt: Runtime, *, platform: str, chat_id: str,
             return b.send_audio(channel, f, caption=caption)
         return b.send_document(channel, f, caption=caption)
 
-    result = await throttled_send(rt, _do)
+    result = await throttled_send(rt, _do, kind="capture")
     if result is None:
         # The post failed after a successful download+decrypt. Deleting the
         # file here would destroy the one thing the feature exists to recover,

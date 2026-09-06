@@ -82,6 +82,6 @@ async def log_change(rt: Runtime, msg: InboundMessage,
     card = _card(kind, msg.platform, chat_label, sender or "unknown",
                  before_clean, after_clean)
     from .send import throttled_send
-    result = await throttled_send(rt, lambda b: b.send_message(channel, card))
+    result = await throttled_send(rt, lambda b: b.send_message(channel, card), kind="log_card")
     rt.audit.note("tglog_sent" if result is not None else "tglog_dropped",
                   platform=msg.platform, chat=msg.chat_id, kind=kind)

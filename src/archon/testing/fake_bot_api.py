@@ -37,6 +37,8 @@ class Call:
     data: dict[str, Any]
     files: dict[str, bytes] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
+    #: False when the server refused the call (scripted 429/drop or an API error).
+    ok: bool = True
 
     def json(self, key: str) -> Any:
         """A field aiogram serialised as JSON (reply_markup, entities, …)."""
@@ -181,8 +183,9 @@ class FakeBotApi:
         return out
 
     def texts(self, method: str = "sendMessage", chat_id: int | None = None) -> list[str]:
+        """Texts the server ACCEPTED (refused attempts are in ``calls`` with ok=False)."""
         return [c.data.get("text", "") for c in self.calls_of(method)
-                if chat_id is None or str(c.data.get("chat_id")) == str(chat_id)]
+                if c.ok and (chat_id is None or str(c.data.get("chat_id")) == str(chat_id))]
 
     async def wait_for_call(self, method: str, *, timeout: float = 5.0, count: int = 1,
                             **match: Any) -> Call:
@@ -230,6 +233,7 @@ class FakeBotApi:
         for scripted in list(self.fail_next):
             if scripted["method"] == method:
                 self.fail_next.remove(scripted)
+                call.ok = False
                 if scripted["drop"]:
                     request.transport.close()  # type: ignore[union-attr]
                     return web.Response(status=500)
@@ -244,6 +248,7 @@ class FakeBotApi:
         try:
             result = await handler(call)
         except _ApiError as exc:
+            call.ok = False
             return web.json_response({"ok": False, "error_code": exc.code,
                                       "description": exc.description}, status=exc.code)
         return self._ok(result)

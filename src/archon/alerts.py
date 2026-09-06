@@ -62,7 +62,8 @@ async def alert_owner(rt: Any, key: str, text: str, *, every_s: float = DEFAULT_
     from .logging_.send import throttled_send
 
     owner_id = rt.settings.telegram_owner_id
-    result = await throttled_send(rt, lambda b: b.send_message(owner_id, text))
+    result = await throttled_send(rt, lambda b: b.send_message(owner_id, text),
+                                  kind="owner_alert")
     if result is None:
         rt.audit.note("owner_alert_failed", key=key, text=text[:200])
         return False

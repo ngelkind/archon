@@ -39,6 +39,8 @@ class Runtime:
     health: dict[str, str] = field(default_factory=dict)
     # Owner-alert bookkeeping (alerts.py): last-sent per key + pre-bot queue.
     alert_state: dict = field(default_factory=dict)
+    # Out-of-band send pacing (logging_/send.py); built lazily inside the loop.
+    send_throttle: object | None = None
     # Wired in app.build_runtime after construction (circular-import avoidance):
     # llm.router.Router, tools.registry.Registry, and the control-bot text
     # handler. Typed as Any deliberately.
