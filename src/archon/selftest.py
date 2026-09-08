@@ -15,10 +15,21 @@ from typing import Any
 from .platforms import downloader
 from .runtime import Runtime
 
-# TODO(TOS-REVIEW): All platforms — hardcoded test number / username / TikTok URL — move to settings and confirm consent before any live run — review before launch
-WA_TEST = "972555000003@s.whatsapp.net"
-TG_TEST = "example_test_account"  # username without @
-TIKTOK = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+# TODO(TOS-REVIEW): All platforms — live-test targets now come from settings
+# (test_wa_number / test_tg_target / test_media_url); confirm consent before any
+# live run — review before launch
+
+
+def _wa_jid(rt: Runtime) -> str:
+    return f"{rt.settings.test_wa_number}@s.whatsapp.net"
+
+
+def _tg_target(rt: Runtime) -> str:
+    return rt.settings.test_tg_target
+
+
+def _media_url(rt: Runtime) -> str:
+    return rt.settings.test_media_url
 
 
 async def _step(rt: Runtime, name: str, coro) -> tuple[str, bool, str]:
@@ -34,7 +45,7 @@ async def _step(rt: Runtime, name: str, coro) -> tuple[str, bool, str]:
 
 async def _wa_text(rt: Runtime) -> str:
     from .platforms.whatsapp import sender
-    mid = await sender.send_text(rt, WA_TEST, "Archon self-test — WhatsApp text ✅")
+    mid = await sender.send_text(rt, _wa_jid(rt), "Archon self-test — WhatsApp text ✅")
     return f"sent id={mid}"
 
 
@@ -42,9 +53,9 @@ async def _wa_video(rt: Runtime) -> str:
     client = rt.clients.get("whatsapp")
     if client is None:
         raise RuntimeError("whatsapp client not connected")
-    v = await downloader.download(TIKTOK, rt.settings.media_dir)
+    v = await downloader.download(_media_url(rt), rt.settings.media_dir)
     from neonize.utils import build_jid
-    user, _, server = WA_TEST.partition("@")
+    user, _, server = _wa_jid(rt).partition("@")
     await client.send_video(build_jid(user, server), v.path,
                             caption="Archon self-test — WhatsApp video ✅")
     return f"downloaded {round(v.size_bytes/1024/1024,1)}MB and sent"
@@ -54,7 +65,7 @@ async def _tg_text(rt: Runtime) -> str:
     client = rt.clients.get("tg_userbot")
     if client is None:
         raise RuntimeError("telegram userbot not connected")
-    entity = await client.get_entity(TG_TEST)
+    entity = await client.get_entity(_tg_target(rt))
     msg = await client.send_message(entity, "Archon self-test — Telegram text ✅")
     return f"sent id={getattr(msg, 'id', '?')}"
 
@@ -63,8 +74,8 @@ async def _tg_video(rt: Runtime) -> str:
     client = rt.clients.get("tg_userbot")
     if client is None:
         raise RuntimeError("telegram userbot not connected")
-    v = await downloader.download(TIKTOK, rt.settings.media_dir)
-    entity = await client.get_entity(TG_TEST)
+    v = await downloader.download(_media_url(rt), rt.settings.media_dir)
+    entity = await client.get_entity(_tg_target(rt))
     await client.send_file(entity, v.path, caption="Archon self-test — Telegram video ✅",
                            supports_streaming=True)
     return f"downloaded {round(v.size_bytes/1024/1024,1)}MB and sent"
@@ -75,7 +86,7 @@ async def _tg_native_schedule(rt: Runtime) -> str:
     client = rt.clients.get("tg_userbot")
     if client is None:
         raise RuntimeError("telegram userbot not connected")
-    entity = await client.get_entity(TG_TEST)
+    entity = await client.get_entity(_tg_target(rt))
     when = datetime.now(UTC) + timedelta(minutes=2)
     await client.send_message(entity, "Archon self-test — TG native schedule (+2min) ✅",
                               schedule=when)
@@ -93,9 +104,9 @@ async def _wa_download_cmd(rt: Runtime) -> str:
     if client is None:
         raise RuntimeError("whatsapp client not connected")
     fake = InboundMessage(
-        platform="wa", source="wa", chat_id=WA_TEST, chat_kind="private",
+        platform="wa", source="wa", chat_id=_wa_jid(rt), chat_kind="private",
         msg_id="SELFTEST", sender_id="972555000001@s.whatsapp.net",
-        ts=datetime.now(UTC), is_from_me=True, text=f"/download {TIKTOK}",
+        ts=datetime.now(UTC), is_from_me=True, text=f"/download {_media_url(rt)}",
     )
     url = download_cmd.is_wa_download(fake.text)
     await download_cmd.handle_wa_download(rt, client, fake, url)

@@ -23,6 +23,7 @@ from .routers import (
     devices,
     integrations,
     net,
+    probe,
     schedules,
     status,
     stream,
@@ -55,6 +56,7 @@ def build_app(rt: Runtime) -> FastAPI:
     app.include_router(approvals.router)
     app.include_router(stream.router)
     app.include_router(net.router)
+    app.include_router(probe.router)
     app.include_router(integrations.authed)
     # The OAuth callback is authenticated by its single-use `state`, not by a
     # bearer token — Google redirects a browser here, which carries neither.

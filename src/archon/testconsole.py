@@ -10,7 +10,6 @@ AUTH_KEY_DUPLICATED) and needs no action from the owner.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 from .runtime import Runtime
 
@@ -25,9 +24,16 @@ async def watch(rt: Runtime) -> None:
                 which = trigger.read_text(encoding="utf-8").strip() or "all"
                 trigger.unlink(missing_ok=True)
                 result.write_text("running…", encoding="utf-8")
-                from .selftest import run_selftest
                 try:
-                    report = await run_selftest(rt, which)
+                    if which.startswith("live"):
+                        # "live [names]" -> the inbound LIVE probes (observed
+                        # effects), distinct from the outbound self-test.
+                        from .probe.runner import render_table, run_probes
+                        names = which[len("live"):].strip() or "all"
+                        report = render_table(await run_probes(rt, names))
+                    else:
+                        from .selftest import run_selftest
+                        report = await run_selftest(rt, which)
                 except Exception as exc:  # noqa: BLE001
                     report = f"crashed: {type(exc).__name__}: {exc}"
                 result.write_text(report, encoding="utf-8")

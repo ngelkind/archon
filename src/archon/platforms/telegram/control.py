@@ -39,6 +39,7 @@ _COMMANDS = [
     ("download", "Download a video by URL and send it"),
     ("wa_pair", "Re-pair WhatsApp by QR code"),
     ("selftest", "Run internal self-tests"),
+    ("livetest", "Run live probes from the test account (observed effects)"),
     ("pair", "Pair a new control device"),
     ("help", "What Archon can do"),
 ]
@@ -311,6 +312,38 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             report = f"self-test crashed: {type(exc).__name__}: {exc}"
         for start in range(0, len(report), 3900):
             await message.answer(html.escape(report[start:start + 3900]))
+
+    @dp.message(Command("livetest"))
+    async def cmd_livetest(message: Message, command: CommandObject) -> None:
+        import asyncio
+
+        from ...probe.runner import (
+            ProbeDisabled,
+            ProbeError,
+            render_table,
+            run_probes,
+        )
+
+        which = (command.args or "all").strip()
+        await message.answer(f"🔬 Live probes ({html.escape(which)})… asserting on "
+                             "observed effects; this can take a minute.")
+
+        async def _go() -> None:
+            try:
+                results = await run_probes(rt, which)
+                out = render_table(results)
+            except ProbeDisabled as exc:
+                out = f"Live probes are off: {exc}"
+            except ProbeError as exc:
+                out = f"Probe error: {exc}"
+            except Exception as exc:  # noqa: BLE001
+                out = f"Probe run crashed: {type(exc).__name__}: {exc}"
+            for start in range(0, len(out), 3900):
+                await message.answer(html.escape(out[start:start + 3900]))
+
+        task = asyncio.create_task(_go())
+        rt.alert_state.setdefault("_probe_tasks", set()).add(task)
+        task.add_done_callback(rt.alert_state["_probe_tasks"].discard)
 
     @dp.message(Command("wa_pair"))
     async def cmd_wa_pair(message: Message) -> None:

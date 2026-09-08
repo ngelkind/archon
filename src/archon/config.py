@@ -105,6 +105,25 @@ class Settings(BaseSettings):
     monitor_groups: str = "whitelist"
     # Triage the owner's OWN messages too (never auto-replied to).
     monitor_include_own_messages: bool = True
+
+    # --- Shared live-test targets (used by /selftest outbound and the
+    # /livetest inbound probes). Moved out of hardcoded constants so a run
+    # never silently hits someone who did not consent. ---
+    test_wa_number: str = "972555000003"   # E.164 digits, no +
+    test_tg_target: str = "example_test_account"      # username (no @) or numeric id
+    test_media_url: str = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+
+    # --- Live probe runner (L3). The TEST account sends to the owner and a
+    # probe group; each probe asserts on an OBSERVED effect, never on "the
+    # call returned". Off by default; refuses to run unless the probe session
+    # is DISTINCT from the owner's. Its own api_id/hash, never the owner's. ---
+    probe_enabled: bool = False
+    probe_dry_run: bool = False
+    probe_telethon_session: str = ""       # test account StringSession
+    probe_telegram_api_id: int = 0
+    probe_telegram_api_hash: str = ""
+    probe_chat_id: str = ""                # shared probe GROUP id (optional)
+    probe_wa_enabled: bool = False         # second neonize session for the test number
     # New/backfilled groups log edits & deletes by default.
     log_groups_default: bool = True
     # Include mail the owner sent themselves as an event source; the
