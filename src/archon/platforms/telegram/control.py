@@ -19,9 +19,28 @@ from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from ...db import repo
 from ...runtime import Runtime
+from ...tools.settings_ import _find_chat
 from .botfactory import make_bot
 
 _PAIR_TTL_MINUTES = 10
+
+#: One source of truth for /help and the Telegram command menu.
+_COMMANDS = [
+    ("status", "Subsystem health, whitelist counts, spend"),
+    ("chats", "List chats and what is monitored/logged"),
+    ("whitelist", "Whitelist a chat by name or id (groups need this to be triaged)"),
+    ("unwhitelist", "Stop triaging a chat"),
+    ("monitor", "monitor all|whitelist [groups] — what gets triaged"),
+    ("logall", "logall on|off — edit/delete logging for all groups"),
+    ("approvals", "Pending confirmations awaiting your tap"),
+    ("ask", "Ask the agent a question"),
+    ("costs", "LLM spend (day/week/month)"),
+    ("download", "Download a video by URL and send it"),
+    ("wa_pair", "Re-pair WhatsApp by QR code"),
+    ("selftest", "Run internal self-tests"),
+    ("pair", "Pair a new control device"),
+    ("help", "What Archon can do"),
+]
 
 
 def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
@@ -77,15 +96,15 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
 
     @dp.message(Command("start", "help"))
     async def cmd_help(message: Message) -> None:
-        await message.answer(
-            "<b>Archon</b> — your assistant.\n\n"
-            "/status — subsystem health, uptime, queue depth\n"
-            "/costs — LLM spend today/week/month\n"
-            "/ask <i>question</i> — talk to the agent\n"
-            "/download <i>url</i> — download a video (YouTube/TikTok/…) and send it; "
-            "in any of your private chats it re-sends as you\n"
-            "/help — this message"
-        )
+        lines = ["<b>Archon</b> — your assistant.", ""]
+        lines += [f"/{cmd} — {html.escape(desc)}" for cmd, desc in _COMMANDS]
+        lines += [
+            "",
+            ("Or just tell me in plain words — e.g. "
+             "\"whitelist my chat with Dana\" or \"what's on my calendar tomorrow\"."),
+            "Send a Google Contacts .csv to import your contacts.",
+        ]
+        await message.answer("\n".join(lines))
 
     @dp.message(Command("status"))
     async def cmd_status(message: Message) -> None:
@@ -116,6 +135,117 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             f"7d: ${week['cost']:.4f} ({week['calls']} calls)\n"
             f"30d: ${month['cost']:.4f} ({month['calls']} calls)"
         )
+
+    def _fmt_chat(r) -> str:
+        flags = []
+        flags.append("\u2705" if r["is_whitelisted"] else "\u2b1c")
+        flags.append("\U0001f4dd" if r["log_deletes"] else "\u2014")
+        if r["auto_reply"]:
+            flags.append("\U0001f916")
+        name = html.escape(r["name"] or r["chat_id"])
+        return f"{' '.join(flags)} <code>{html.escape(r['chat_id'])}</code> {name} ({r['kind']})"
+
+    @dp.message(Command("chats"))
+    async def cmd_chats(message: Message, command: CommandObject) -> None:
+        platform = (command.args or "").strip() or None
+        if platform and platform not in ("tg", "wa", "gmail"):
+            await message.answer("Usage: /chats [tg|wa|gmail]")
+            return
+        rows = repo.chat_list(rt.db, platform=platform)
+        wl = sum(1 for r in rows if r["is_whitelisted"])
+        header = (f"<b>Chats</b> ({len(rows)}, {wl} whitelisted) — "
+                  "\u2705 whitelisted \u2b1c not \u00b7 \U0001f4dd logged \u00b7 \U0001f916 auto-reply")
+        shown = rows[:40]
+        body = "\n".join(_fmt_chat(r) for r in shown) or "(none yet)"
+        more = f"\n\n…and {len(rows) - len(shown)} more" if len(rows) > len(shown) else ""
+        await message.answer(header + "\n\n" + body + more)
+
+    async def _resolve_one(message: Message, args: str):
+        """Return a chat row for a name/id argument, or None after replying with
+        guidance (unknown, or ambiguous with the candidates listed)."""
+        args = args.strip()
+        if not args:
+            await message.answer("Usage: /whitelist <chat name or id>")
+            return None
+        # An exact id on any platform wins.
+        for plat in ("tg", "wa", "gmail"):
+            row = repo.chat_get(rt.db, plat, args)
+            if row is not None:
+                return row
+        matches = _find_chat(rt.db, None, args)
+        if not matches:
+            await message.answer(f"No chat matches “{html.escape(args)}”. Try /chats to see them.")
+            return None
+        if len(matches) > 1 and matches[0]["score"] - matches[1]["score"] < 0.15:
+            lines = ["Several chats match — run the command with the exact id:"]
+            lines += [f"<code>{html.escape(m['chat_id'])}</code> {html.escape(m['name'] or m['chat_id'])}"
+                      for m in matches[:6]]
+            await message.answer("\n".join(lines))
+            return None
+        top = matches[0]
+        return repo.chat_get(rt.db, top["platform"], top["chat_id"])
+
+    @dp.message(Command("whitelist"))
+    async def cmd_whitelist(message: Message, command: CommandObject) -> None:
+        row = await _resolve_one(message, command.args or "")
+        if row is None:
+            return
+        repo.chat_set_field(rt.db, row["id"], "is_whitelisted", 1)
+        rt.audit.note("whitelist_add", chat=row["chat_id"], via="command")
+        await message.answer(f"\u2705 Whitelisted <b>{html.escape(row['name'] or row['chat_id'])}</b> — "
+                             "it will now be triaged.")
+
+    @dp.message(Command("unwhitelist"))
+    async def cmd_unwhitelist(message: Message, command: CommandObject) -> None:
+        row = await _resolve_one(message, command.args or "")
+        if row is None:
+            return
+        repo.chat_set_field(rt.db, row["id"], "is_whitelisted", 0)
+        rt.audit.note("whitelist_remove", chat=row["chat_id"], via="command")
+        await message.answer(f"Removed <b>{html.escape(row['name'] or row['chat_id'])}</b> "
+                             "from the whitelist.")
+
+    @dp.message(Command("monitor"))
+    async def cmd_monitor(message: Message, command: CommandObject) -> None:
+        parts = (command.args or "").split()
+        if not parts or parts[0] not in ("all", "whitelist"):
+            pc = repo.setting_get(rt.db, "monitor.private_chats", rt.settings.monitor_private_chats)
+            gr = repo.setting_get(rt.db, "monitor.groups", rt.settings.monitor_groups)
+            await message.answer(
+                f"Monitoring — private chats: <b>{pc}</b>, groups: <b>{gr}</b>.\n"
+                "Usage: /monitor all|whitelist [groups]  (omit 'groups' to set private chats)")
+            return
+        key = "monitor.groups" if parts[-1] == "groups" else "monitor.private_chats"
+        repo.setting_set(rt.db, key, parts[0])
+        rt.audit.note("monitor_set", key=key, value=parts[0], via="command")
+        await message.answer(f"Set <b>{key}</b> = <b>{parts[0]}</b>.")
+
+    @dp.message(Command("logall"))
+    async def cmd_logall(message: Message, command: CommandObject) -> None:
+        arg = (command.args or "").strip()
+        if arg not in ("on", "off"):
+            await message.answer("Usage: /logall on|off")
+            return
+        want = 1 if arg == "on" else 0
+        cur = rt.db.execute(
+            "UPDATE chats SET log_deletes = ? WHERE tenant_id = 1 AND kind IN ('group','channel')",
+            (want,))
+        repo.setting_set(rt.db, "log.groups_default", arg == "on")
+        rt.audit.note("logall", enabled=arg == "on", chats=cur.rowcount or 0, via="command")
+        await message.answer(f"Edit/delete logging turned <b>{arg}</b> for "
+                             f"{cur.rowcount or 0} groups/channels (and for new ones).")
+
+    @dp.message(Command("approvals"))
+    async def cmd_approvals(message: Message) -> None:
+        rows = rt.db.query(
+            "SELECT id, kind, created_at, expires_at FROM pending_actions "
+            "WHERE tenant_id = 1 AND status = 'pending' ORDER BY id DESC LIMIT 20")
+        if not rows:
+            await message.answer("No pending approvals.")
+            return
+        lines = [f"<b>{len(rows)} pending approval(s)</b>"]
+        lines += [f"#{r['id']} {html.escape(r['kind'])} (expires {r['expires_at']})" for r in rows]
+        await message.answer("\n".join(lines))
 
     @dp.message(Command("download"))
     async def cmd_download(message: Message) -> None:
@@ -292,16 +422,8 @@ async def run(rt: Runtime, *, handle_signals: bool = True,
     from aiogram.types import BotCommand
 
     try:
-        await bot.set_my_commands([
-            BotCommand(command="status", description="Subsystem health & uptime"),
-            BotCommand(command="ask", description="Ask the agent a question"),
-            BotCommand(command="costs", description="LLM spend (day/week/month)"),
-            BotCommand(command="download", description="Download a video by URL"),
-            BotCommand(command="pair", description="Pair a new control device"),
-            BotCommand(command="selftest", description="Run internal self-tests"),
-            BotCommand(command="wa_pair", description="Re-pair WhatsApp by QR code"),
-            BotCommand(command="help", description="What Archon can do"),
-        ])
+        await bot.set_my_commands(
+            [BotCommand(command=c, description=d) for c, d in _COMMANDS])
     except Exception as exc:  # noqa: BLE001 — a menu failure must not stop the bot
         rt.audit.note("set_my_commands_failed", error=repr(exc)[:120])
     try:
