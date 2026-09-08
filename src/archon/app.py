@@ -40,6 +40,9 @@ def build_runtime() -> Runtime:
     audit = AuditLog(settings.audit_log_path, db, store_content=settings.store_audit_content)
     audit.note("startup", schema_version=version)
     rt = Runtime(settings=settings, db=db, audit=audit, bus=Bus())
+    from .db.migrations import backfill_monitor_defaults
+
+    backfill_monitor_defaults(rt)
     _wire_llm_and_tools(rt)
     return rt
 

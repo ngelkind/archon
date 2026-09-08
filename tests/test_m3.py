@@ -26,23 +26,60 @@ def _msg(**kw) -> InboundMessage:
 
 def test_gate_fail_closed(tmp_path):
     rt = make_rt(tmp_path)
-    # unknown chat → not whitelisted
-    assert decide(rt, None, _msg())[0] is False
-    # own messages never processed
-    assert decide(rt, None, _msg(is_from_me=True)) == (False, "from_me")
-    # stale messages dropped
-    old = _msg(ts=datetime.now(UTC) - timedelta(hours=7))
-    assert decide(rt, None, old) == (False, "stale_message")
-    # whitelisted chat passes
+    # An unknown GROUP is still gated: groups stay whitelist-only for triage.
+    assert decide(rt, None, _msg()) == (False, "not_whitelisted")
+    # A whitelisted group passes.
     pk = repo.chat_upsert(rt.db, "wa", "c@g.us", "grp", "group")
     repo.chat_set_field(rt.db, pk, "is_whitelisted", 1)
     row = repo.chat_get(rt.db, "wa", "c@g.us")
     assert decide(rt, row, _msg()) == (True, "whitelisted")
-    # gmail default-on, switchable off
+    # monitor.groups=all triages an unknown group too.
+    repo.setting_set(rt.db, "monitor.groups", "all")
+    assert decide(rt, None, _msg()) == (True, "monitored_group")
+    # Edits/deletes never reach triage (they go to the log-card path).
+    assert decide(rt, None, _msg(is_edit=True)) == (False, "edit_or_delete_event")
+    # Stale non-gmail messages are dropped; gmail is exempt (watermark guards it).
+    old = _msg(ts=datetime.now(UTC) - timedelta(hours=7))
+    assert decide(rt, None, old) == (False, "stale_message")
+    # gmail default-on, switchable off.
     gm = _msg(platform="gmail", chat_id="a@b.com", chat_kind="email")
     assert decide(rt, None, gm)[0] is True
     repo.setting_set(rt.db, "gmail.triage_enabled", False)
     assert decide(rt, None, gm)[0] is False
+
+
+def test_gate_monitors_private_chats_by_default(tmp_path):
+    rt = make_rt(tmp_path)
+    dm = _msg(chat_id="p@s.whatsapp.net", chat_kind="private")
+    # Monitor-everything: an unknown DM is admitted by default...
+    assert decide(rt, None, dm) == (True, "monitored_private")
+    # ...and switchable back to the old whitelist-only behaviour.
+    repo.setting_set(rt.db, "monitor.private_chats", "whitelist")
+    assert decide(rt, None, dm) == (False, "not_whitelisted")
+
+
+def test_gate_own_messages_are_triaged_unless_opted_out(tmp_path):
+    rt = make_rt(tmp_path)
+    own = _msg(chat_id="p@s.whatsapp.net", chat_kind="private", is_from_me=True)
+    # Default: the owner's own message IS triaged (auto-reply skips it elsewhere).
+    assert decide(rt, None, own) == (True, "monitored_private")
+    repo.setting_set(rt.db, "monitor.include_own_messages", False)
+    assert decide(rt, None, own) == (False, "from_me")
+
+
+def test_gate_media_only_message_is_content_not_no_text(tmp_path):
+    from archon.models import MediaRef
+
+    rt = make_rt(tmp_path)
+    # A caption-less photo in a whitelisted group must reach vision, not be
+    # dropped as no_text before the image is ever looked at.
+    pk = repo.chat_upsert(rt.db, "wa", "c@g.us", "grp", "group")
+    repo.chat_set_field(rt.db, pk, "is_whitelisted", 1)
+    row = repo.chat_get(rt.db, "wa", "c@g.us")
+    photo = _msg(text=None, media=[MediaRef(kind="image", local_path=None)])
+    assert decide(rt, row, photo) == (True, "whitelisted")
+    # Truly empty (no text, no media) is still dropped.
+    assert decide(rt, row, _msg(text=None)) == (False, "no_text")
 
 
 def _b64(s: str) -> str:

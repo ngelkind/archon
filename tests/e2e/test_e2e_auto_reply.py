@@ -69,10 +69,28 @@ async def test_immediate_whatsapp_auto_reply_is_sent(tmp_path):
 
 
 @run_async
-async def test_own_messages_are_never_auto_replied_to(tmp_path):
+async def test_own_messages_are_triaged_but_not_auto_replied(tmp_path):
+    """Default (monitor.include_own_messages=on): the owner's own message is
+    triaged, but the auto-reply loop never answers it."""
     tg = FakeTelethonClient(dialogs=[FakeDialog(id=GROUP.id, name=GROUP.title, is_group=True)])
-    script = ScriptedProvider().triage("respond").reply("should not be sent")
+    script = ScriptedProvider().triage("respond").reply("SHOULD NOT SEND")
     async with await Harness.start(tmp_path, subsystems=("pipeline",), script=script) as h:
+        h.chat("tg", str(GROUP.id), whitelisted=True, auto_reply=True)
+        await h.publish(h.make_message(chat_id=str(GROUP.id), text="note to self",
+                                       is_from_me=True))
+        note = await h.wait_for_audit("triage", chat=str(GROUP.id))
+        assert note["verdict"] == "respond"
+        done = await h.wait_for_audit("auto_reply_done", chat=str(GROUP.id))
+        assert done["replied"] == 0
+        assert tg.sent == []
+
+
+@run_async
+async def test_own_messages_are_dropped_when_the_owner_opts_out(tmp_path):
+    """monitor.include_own_messages=off restores the from_me gate drop."""
+    tg = FakeTelethonClient(dialogs=[FakeDialog(id=GROUP.id, name=GROUP.title, is_group=True)])
+    async with await Harness.start(tmp_path, subsystems=("pipeline",),
+                                   settings={"monitor_include_own_messages": False}) as h:
         h.chat("tg", str(GROUP.id), whitelisted=True, auto_reply=True)
         await h.publish(h.make_message(chat_id=str(GROUP.id), text="note to self",
                                        is_from_me=True))

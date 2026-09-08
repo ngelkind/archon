@@ -26,6 +26,11 @@ _MAX_AGE = timedelta(hours=6)
 _DEBOUNCE_S = {"gmail": 5.0, "wa": 20.0, "tg": 20.0}
 
 
+def _setting_bool(store, rt, key: str, default: bool) -> bool:
+    val = repo.setting_get(store, key, default)
+    return bool(val)
+
+
 def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
     """Pure gate. Returns (allowed, reason). Fail closed.
 
@@ -36,15 +41,25 @@ def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
     log_ch = repo.setting_get(store, "log.channel_id", rt.settings.tg_log_channel_id)
     if log_ch is not None and msg.chat_id == str(log_ch):
         return False, "log_channel"
-    if msg.is_from_me:
+    # The owner's own messages ARE triaged (an event they typed to a group is
+    # still an event) but are never auto-replied to — _process_batch skips
+    # is_from_me for replies. Opt out with monitor.include_own_messages=false.
+    if msg.is_from_me and not _setting_bool(store, rt, "monitor.include_own_messages",
+                                            rt.settings.monitor_include_own_messages):
         return False, "from_me"
     if msg.is_edit or msg.is_delete:
         return False, "edit_or_delete_event"
-    if not (msg.text or "").strip():
+    # Media with no caption is still content — a poster or an invitation image.
+    # The vision step turns it into text; only a message with neither text nor
+    # media has nothing to act on.
+    if not (msg.text or "").strip() and not msg.media:
         return False, "no_text"
     now = datetime.now(UTC)
     ts = msg.ts if msg.ts.tzinfo else msg.ts.replace(tzinfo=UTC)
-    if now - ts > _MAX_AGE:
+    # Gmail is exempt from the freshness cap: the poll watermark already stops
+    # a backlog replay, and a >6h outage should not silently drop the mail that
+    # arrived during it (that cap is for chat platforms that redeliver).
+    if msg.platform != "gmail" and now - ts > _MAX_AGE:
         return False, "stale_message"
     if msg.platform == "gmail":
         if repo.setting_get(store, "gmail.triage_enabled", True):
@@ -52,6 +67,19 @@ def decide(rt: Runtime, chat_row, msg: InboundMessage) -> tuple[bool, str]:
         return False, "gmail_triage_disabled"
     if chat_row is not None and chat_row["is_whitelisted"]:
         return True, "whitelisted"
+    # Monitor-everything: private chats are admitted by default; groups stay
+    # whitelist-gated unless monitor.groups=all (a group is high-volume, so
+    # every message would be an LLM call). See config.Settings.monitor_*.
+    kind = (chat_row["kind"] if chat_row is not None else msg.chat_kind) or ""
+    if kind == "private":
+        mode = repo.setting_get(store, "monitor.private_chats",
+                                rt.settings.monitor_private_chats)
+        if mode == "all":
+            return True, "monitored_private"
+        return False, "not_whitelisted"
+    mode = repo.setting_get(store, "monitor.groups", rt.settings.monitor_groups)
+    if mode == "all":
+        return True, "monitored_group"
     return False, "not_whitelisted"
 
 

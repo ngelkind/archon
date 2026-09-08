@@ -143,13 +143,19 @@ async def test_peerless_delete_never_stamps_an_unrelated_chat(tmp_path):
     the Business connection. Only a legacy-group row written by this userbot
     is an unambiguous match."""
     tg = _client()
-    async with await _start(tmp_path, tg) as h:
+    # The private seed is admitted by monitor-everything and triaged; a
+    # standing "ignore" verdict absorbs that — this test is about delete
+    # attribution, not triage.
+    async with await _start(tmp_path, tg, ScriptedProvider().triage("ignore", once=False)) as h:
         await h.publish(h.make_message(platform="tg", chat_id="777001", chat_kind="private",
                                        source="business", msg_id="45231", text="private"))
         await h.publish(h.make_message(platform="tg", chat_id="-1001234567890",
                                        source="userbot", msg_id="45231", text="super"))
+        # The supergroup is gated (not whitelisted); the private business chat
+        # is admitted by monitor-everything. Either way both rows are cached,
+        # which is all the delete-attribution test needs.
         await h.wait_for_audit("not_whitelisted", chat="-1001234567890")
-        await h.wait_for_audit("not_whitelisted", chat="777001")
+        await h.wait_for_audit("monitored_private", chat="777001")
 
         await tg.fire(deleted(None, [45231]))
         await h.wait_for_audit("tg_delete_unresolved", msg_id="45231")

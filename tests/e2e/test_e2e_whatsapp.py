@@ -82,7 +82,8 @@ async def test_lid_sender_is_whitelisted_through_its_phone_number(tmp_path):
     The gate resolves the LID to the phone, honours the whitelist, and links
     the LID row so the next message is instant."""
     client = _client()
-    async with await _start(tmp_path, client, ScriptedProvider().triage("ignore")) as h:
+    async with await _start(tmp_path, client, ScriptedProvider().triage("ignore"),
+                            monitor_private_chats="whitelist") as h:
         h.chat("wa", DANA, kind="private", whitelisted=True)
         await client.fire(wa.text_message(DANA_LID, "hi from my lid", sender=DANA_LID))
         gate = await h.wait_for_audit("whitelisted_via_lid", chat=DANA_LID)
@@ -131,7 +132,9 @@ async def test_view_once_in_an_unarmed_chat_is_left_alone(tmp_path):
     client = _client()
     async with await _start(tmp_path, client) as h:
         await client.fire(wa.image_message(GROUP, view_once=True, msg_id="VO2"))
-        await h.wait_for_audit("no_text", chat=GROUP)
+        # The group is not whitelisted, so it does not reach triage; and the
+        # chat is not armed for capture, so the media is never downloaded.
+        await h.wait_for_audit("not_whitelisted", chat=GROUP)
         assert client.downloads == []
         assert h.audit("capture_no_channel") == []
 

@@ -91,6 +91,26 @@ class Settings(BaseSettings):
     llm_daily_budget_usd: float = 3.0
     audit_store_content: bool = True
     timezone: str = "Asia/Jerusalem"
+
+    # --- What the bot watches (owner decision 2026-09-06: monitor
+    # everything by default). These are env defaults; each is also a
+    # runtime setting (monitor.private_chats, monitor.groups,
+    # monitor.include_own_messages, log.groups_default, gmail.include_self)
+    # the owner flips from the control bot without a restart. ---
+    # "all": every private chat is triaged. "whitelist": only whitelisted
+    # ones (the old behaviour, which left 0 of 267 tg chats reachable).
+    monitor_private_chats: str = "all"
+    # Groups stay whitelist-gated for triage by default (a group is
+    # noisy and every message would be an LLM call); "all" triages them.
+    monitor_groups: str = "whitelist"
+    # Triage the owner's OWN messages too (never auto-replied to).
+    monitor_include_own_messages: bool = True
+    # New/backfilled groups log edits & deletes by default.
+    log_groups_default: bool = True
+    # Include mail the owner sent themselves as an event source; the
+    # old "-from:me" query excluded it and broke the "email yourself"
+    # smoke test.
+    gmail_include_self: bool = True
     gmail_poll_seconds: int = 90
 
     # --- Control API (Android app; off by default) ---
