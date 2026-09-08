@@ -23,9 +23,14 @@ class OpenRouterProvider:
     supports_tools = True
     supports_vision = True
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, *, rt: Any = None) -> None:
         self._key = api_key
-        self._client = httpx.AsyncClient(timeout=120)
+        if rt is not None:
+            from ..net.client import new_async_client
+            self._client = new_async_client(rt, subsystem="llm",
+                                            purpose="openrouter", timeout=120)
+        else:
+            self._client = httpx.AsyncClient(timeout=120)
 
     async def complete(
         self,

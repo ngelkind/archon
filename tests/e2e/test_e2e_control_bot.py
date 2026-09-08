@@ -166,3 +166,19 @@ async def test_selftest_rejects_unknown_steps_instead_of_reporting_zero_of_zero(
         assert reply.startswith("Unknown step(s): whatsapp")
         assert "wa_text" in reply
         assert h.audit("selftest_start") == []
+
+
+@run_async
+async def test_bot_api_traffic_is_in_the_ledger_and_stays_on_loopback(tmp_path):
+    """The aiohttp hook records every Bot API call, and an offline run reaches
+    nothing but loopback — the network-hygiene gate the CI relies on."""
+    from net_assert import assert_call, only_expected_hosts
+
+    async with await _start(tmp_path) as h:
+        await h.owner_says("/status")
+        # the reply is a sendMessage over aiohttp to the fake Bot API
+        call = assert_call(h.rt, subsystem="telegram", method="POST")
+        assert call.host == "127.0.0.1"
+        assert call.status == 200
+        # nothing in this whole scenario touched the real internet
+        only_expected_hosts(h.rt)

@@ -99,6 +99,12 @@ class Harness:
         migrate(db)
         audit = AuditLog(s.audit_log_path, db, store_content=s.store_audit_content)
         rt = Runtime(settings=s, db=db, audit=audit, bus=Bus())
+        from ..netlog import NetLedger
+
+        # Same ledger the product boots with, so a scenario can assert on the
+        # wire: the offline suite must record nothing but loopback. Alerting is
+        # off — an unexpected host in a test is an assertion's job, not a push.
+        rt.net = NetLedger(rt, alert=False)
         app_module._wire_llm_and_tools(rt)
 
         llm = script or ScriptedProvider()

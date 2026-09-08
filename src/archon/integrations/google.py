@@ -24,15 +24,16 @@ The owner tenant is deliberately untouched: the personal bot keeps using
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from ..db import repo
 from ..platforms.google_auth import SCOPES, GoogleAuth, TenantCredentialStore
 
 PROVIDER = "google"
 _AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
-_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"  # noqa: S105 — URL, not a secret
+_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 _STATE_TTL_MINUTES = 15
 
 
@@ -84,15 +85,16 @@ def authorize_url(rt: Any, tenant_id: int) -> tuple[str, str]:
 
 def _exchange_code_over_http(rt: Any, code: str) -> dict[str, Any]:
     """Trade an authorization code for tokens. The only network call here."""
-    import httpx
+    from ..net.client import new_sync_client
 
-    response = httpx.post(_TOKEN_ENDPOINT, timeout=30, data={
-        "code": code,
-        "client_id": rt.settings.google_oauth_client_id,
-        "client_secret": rt.settings.google_oauth_client_secret,
-        "redirect_uri": rt.settings.google_oauth_redirect_uri,
-        "grant_type": "authorization_code",
-    })
+    with new_sync_client(rt, subsystem="google", purpose="oauth", timeout=30) as client:
+        response = client.post(_TOKEN_ENDPOINT, data={
+            "code": code,
+            "client_id": rt.settings.google_oauth_client_id,
+            "client_secret": rt.settings.google_oauth_client_secret,
+            "redirect_uri": rt.settings.google_oauth_redirect_uri,
+            "grant_type": "authorization_code",
+        })
     if response.status_code >= 400:
         # Google echoes the code back in some errors; never log the body.
         raise GoogleLinkError(
@@ -187,8 +189,8 @@ def build_session(rt: Any, tenant_id: int) -> dict[str, Any]:
     auth = auth_for(rt, tenant_id)
     return {
         "auth": auth,
-        "gmail": GmailClient(auth),
-        "calendar": CalendarClient(auth, rt.settings.timezone),
+        "gmail": GmailClient(auth, rt=rt),
+        "calendar": CalendarClient(auth, rt.settings.timezone, rt=rt),
     }
 
 

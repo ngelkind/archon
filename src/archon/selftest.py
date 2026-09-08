@@ -85,6 +85,7 @@ async def _wa_download_cmd(rt: Runtime) -> str:
     """Exercise the exact /download-in-WhatsApp code path (LID convert, revoke,
     re-send), as if the owner typed it in the chat with the test number."""
     from datetime import UTC, datetime
+
     from .models import InboundMessage
     from .platforms.whatsapp import download_cmd
     client = rt.clients.get("whatsapp")
@@ -101,12 +102,13 @@ async def _wa_download_cmd(rt: Runtime) -> str:
 
 
 async def _calendar_event(rt: Runtime) -> str:
-    from datetime import UTC, datetime, timedelta
+    import asyncio as _a
+    from datetime import datetime, timedelta
+
     from .calendar_.client import CalendarClient
     from .platforms.google_auth import GoogleAuth
-    import asyncio as _a
     cal = rt.clients.get("calendar") or CalendarClient(
-        GoogleAuth(rt.settings.google_token_path), rt.settings.timezone)
+        GoogleAuth(rt.settings.google_token_path), rt.settings.timezone, rt=rt)
     rt.clients["calendar"] = cal
     start = (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0,
                                                          microsecond=0)
@@ -118,9 +120,10 @@ async def _calendar_event(rt: Runtime) -> str:
 
 async def _gmail_send(rt: Runtime) -> str:
     import asyncio as _a
+
     from .platforms.gmail.client import GmailClient
     from .platforms.google_auth import GoogleAuth
-    gm = rt.clients.get("gmail") or GmailClient(GoogleAuth(rt.settings.google_token_path))
+    gm = rt.clients.get("gmail") or GmailClient(GoogleAuth(rt.settings.google_token_path), rt=rt)
     rt.clients["gmail"] = gm
     addr = await _a.to_thread(gm.get_profile_address)
     mid = await _a.to_thread(gm.send, to=addr, subject="Archon self-test",

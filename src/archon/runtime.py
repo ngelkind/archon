@@ -61,6 +61,10 @@ class Runtime:
     # the GLOBAL one is what protects the shared Telegram api_id. Built lazily
     # by pacing.pacer_for; typed as Any to avoid a circular import.
     pacer: object | None = None
+    # In-process network ledger (netlog.NetLedger), built in app.build_runtime.
+    # Every outbound-request hook records to it; None until wired. Typed Any to
+    # avoid importing netlog here.
+    net: object | None = None
 
     def uptime_s(self) -> int:
         return int(time.time() - self.started_at)

@@ -14,8 +14,19 @@ from fastapi import FastAPI
 
 from ..runtime import Runtime
 from .routers import (
-    agent, approvals, chats, config, contacts, costs, devices, integrations,
-    schedules, status, stream, tools,
+    agent,
+    approvals,
+    chats,
+    config,
+    contacts,
+    costs,
+    devices,
+    integrations,
+    net,
+    schedules,
+    status,
+    stream,
+    tools,
 )
 
 
@@ -43,6 +54,7 @@ def build_app(rt: Runtime) -> FastAPI:
     app.include_router(costs.router)
     app.include_router(approvals.router)
     app.include_router(stream.router)
+    app.include_router(net.router)
     app.include_router(integrations.authed)
     # The OAuth callback is authenticated by its single-use `state`, not by a
     # bearer token — Google redirects a browser here, which carries neither.

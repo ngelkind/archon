@@ -14,7 +14,6 @@ import anthropic
 
 from .base import (
     ChatMessage,
-    ImagePart,
     LLMResult,
     ProviderError,
     ToolCall,
@@ -85,8 +84,12 @@ class AnthropicProvider:
     supports_tools = True
     supports_vision = True
 
-    def __init__(self, api_key: str) -> None:
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+    def __init__(self, api_key: str, *, rt: Any = None) -> None:
+        kw: dict[str, Any] = {"api_key": api_key}
+        if rt is not None:
+            from ..net.client import new_async_client
+            kw["http_client"] = new_async_client(rt, subsystem="llm", purpose="anthropic")
+        self._client = anthropic.AsyncAnthropic(**kw)
 
     async def complete(
         self,

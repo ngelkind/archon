@@ -82,10 +82,16 @@ def build_message(
 
 
 class GmailClient:
-    def __init__(self, auth: GoogleAuth) -> None:
+    def __init__(self, auth: GoogleAuth, *, rt: Any = None) -> None:
         self._auth = auth
+        self._rt = rt
 
     def _build_service(self) -> Any:  # test seam — the only place Google is touched
+        if self._rt is not None:
+            from ...net.google_hook import authorized_http
+            return build("gmail", "v1", cache_discovery=False,
+                         http=authorized_http(self._rt, self._auth.credentials(),
+                                              purpose="gmail"))
         return build("gmail", "v1", credentials=self._auth.credentials(),
                      cache_discovery=False)
 

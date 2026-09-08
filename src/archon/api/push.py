@@ -24,8 +24,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
-
 from ..db import repo
 from ..runtime import Runtime
 
@@ -81,7 +79,8 @@ async def notify(
 
     sent = 0
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        from ..net.client import new_async_client
+        async with new_async_client(rt, subsystem="push", timeout=_TIMEOUT_S) as client:
             for topic in topics:
                 payload: dict[str, Any] = {
                     "topic": topic, "title": title, "message": message,

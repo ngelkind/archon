@@ -7,8 +7,6 @@ import re
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from ..db import repo
 from ..platforms.telegram import userbot
 from ..scheduler.delays import parse_policy
@@ -114,7 +112,9 @@ def register(registry: Registry) -> None:
     async def attach_image_from_url(ctx: ToolContext, url: str) -> str:
         if not re.match(r"^https?://", url):
             return json.dumps({"error": "only http(s) URLs"})
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        from ..net.client import new_async_client
+        async with new_async_client(ctx.rt, subsystem="fetch", timeout=30,
+                                    follow_redirects=True) as client:
             resp = await client.get(url)
         if resp.status_code != 200:
             return json.dumps({"error": f"HTTP {resp.status_code}"})

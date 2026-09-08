@@ -78,7 +78,10 @@ class GeminiProvider:
     supports_tools = True
     supports_vision = True
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, *, rt: Any = None) -> None:
+        # google-genai exposes no http_client hook, so Gemini's own API traffic
+        # is NOT in the ledger — the socket probe and the VM tap cover it. rt is
+        # accepted for a uniform constructor and deliberately unused here.
         self._client = genai.Client(api_key=api_key)
 
     async def complete(

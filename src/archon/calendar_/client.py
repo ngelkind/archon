@@ -37,11 +37,17 @@ def _wrap(exc: HttpError) -> CalendarError:
 
 
 class CalendarClient:
-    def __init__(self, auth: GoogleAuth, timezone: str) -> None:
+    def __init__(self, auth: GoogleAuth, timezone: str, *, rt: Any = None) -> None:
         self._auth = auth
         self.timezone = timezone
+        self._rt = rt
 
     def _svc(self) -> Any:  # test seam
+        if self._rt is not None:
+            from ..net.google_hook import authorized_http
+            return build("calendar", "v3", cache_discovery=False,
+                         http=authorized_http(self._rt, self._auth.credentials(),
+                                              purpose="calendar"))
         return build("calendar", "v3", credentials=self._auth.credentials(),
                      cache_discovery=False)
 

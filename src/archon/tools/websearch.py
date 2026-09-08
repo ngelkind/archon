@@ -108,8 +108,10 @@ def register(registry: Registry) -> None:
         if not re.match(r"^https?://", url):
             return json.dumps({"error": "only http(s) URLs"})
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True,
-                                         headers={"User-Agent": "Archon/0.1"}) as client:
+            from ..net.client import new_async_client
+            async with new_async_client(ctx.rt, subsystem="fetch", timeout=30,
+                                        follow_redirects=True,
+                                        headers={"User-Agent": "Archon/0.1"}) as client:
                 resp = await client.get(url)
         except httpx.HTTPError as exc:
             return json.dumps({"error": f"fetch failed: {type(exc).__name__}"})

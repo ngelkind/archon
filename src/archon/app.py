@@ -40,6 +40,9 @@ def build_runtime() -> Runtime:
     audit = AuditLog(settings.audit_log_path, db, store_content=settings.store_audit_content)
     audit.note("startup", schema_version=version)
     rt = Runtime(settings=settings, db=db, audit=audit, bus=Bus())
+    from .netlog import NetLedger
+
+    rt.net = NetLedger(rt)
     from .db.migrations import backfill_monitor_defaults
 
     backfill_monitor_defaults(rt)
@@ -53,21 +56,21 @@ def _wire_llm_and_tools(rt: Runtime) -> None:
     from .agent.owner import handle_owner_text
     from .llm.router import Router
     from .tools import calendar as calendar_tools
-    from .tools import email_ as email_tools
-    from .tools import llm_admin, system as system_tools
-    from .tools.registry import Registry
-
     from .tools import capture as capture_tools
     from .tools import contacts as contacts_tools
     from .tools import contexts as context_tools
+    from .tools import email_ as email_tools
+    from .tools import llm_admin
     from .tools import logging_ as logging_tools
     from .tools import media as media_tools
     from .tools import scheduling as scheduling_tools
     from .tools import settings_ as settings_tools
     from .tools import subbots as subbot_tools
+    from .tools import system as system_tools
     from .tools import telegram as telegram_tools
     from .tools import websearch as websearch_tools
     from .tools import whatsapp as whatsapp_tools
+    from .tools.registry import Registry
 
     rt.router = Router(rt)
     registry = Registry()
@@ -248,6 +251,9 @@ async def main() -> None:
 
     start_subsystem(rt, "tg_userbot", lambda: tg_userbot.run(rt))
     start_subsystem(rt, "scheduler", lambda: scheduler_loop.run(rt))
+    from .net import socket_probe
+
+    start_subsystem(rt, "socket_probe", lambda: socket_probe.run(rt))
     from .logging_ import logworker
 
     start_subsystem(rt, "logworker", lambda: logworker.run(rt))

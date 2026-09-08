@@ -35,6 +35,7 @@ _COMMANDS = [
     ("approvals", "Pending confirmations awaiting your tap"),
     ("ask", "Ask the agent a question"),
     ("costs", "LLM spend (day/week/month)"),
+    ("netstat", "Outbound connections and any unexpected hosts"),
     ("download", "Download a video by URL and send it"),
     ("wa_pair", "Re-pair WhatsApp by QR code"),
     ("selftest", "Run internal self-tests"),
@@ -118,7 +119,40 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
             lines.append(f"{html.escape(name)}: {html.escape(state)}")
         active = repo.setting_get(rt.db, "llm.active_provider", rt.settings.llm_active_provider)
         lines.append(f"llm provider: {html.escape(str(active))}")
+        net = getattr(rt, "net", None)
+        if net is not None:
+            summ = net.summary()
+            line = f"net: {summ['total']} calls/5m to {len(summ['hosts'])} hosts"
+            if summ["unexpected_hosts"]:
+                line += f" ⚠ unexpected: {', '.join(summ['unexpected_hosts'][:3])}"
+            lines.append(html.escape(line) if not summ["unexpected_hosts"] else line)
         await message.answer("\n".join(lines))
+
+    @dp.message(Command("netstat"))
+    async def cmd_netstat(message: Message) -> None:
+        net = getattr(rt, "net", None)
+        if net is None:
+            await message.answer("Network ledger not wired.")
+            return
+        summ = net.summary()
+        lines = [f"<b>Network</b> (last {int(summ['window_s'] // 60)}m)",
+                 f"total: {summ['total']} calls"]
+        for sub, st in sorted(summ["by_subsystem"].items()):
+            err = f", {st['errors']} err" if st["errors"] else ""
+            lines.append(f"{html.escape(sub)}: {st['calls']}{err}")
+        if summ["unexpected_hosts"]:
+            lines.append("⚠ <b>unexpected hosts:</b> "
+                         + ", ".join(html.escape(h) for h in summ["unexpected_hosts"]))
+        recent = net.recent(limit=12)
+        if recent:
+            lines.append("<b>recent:</b>")
+            for c_ in recent:
+                st = c_.error or (str(c_.status) if c_.status is not None else "-")
+                dur = f"{c_.duration_ms}ms" if c_.duration_ms is not None else "-"
+                lines.append(
+                    f"<code>{html.escape(c_.subsystem)}</code> {html.escape(c_.method)} "
+                    f"{html.escape(c_.host)}{html.escape(c_.path)} {html.escape(st)} {dur}")
+        await message.answer("\n".join(lines[:40]))
 
     @dp.message(Command("costs"))
     async def cmd_costs(message: Message) -> None:

@@ -108,7 +108,7 @@ def test_each_tenant_is_polled_with_their_own_creds_and_watermark(tmp_path, monk
 
     seen_refresh: list[str] = []
 
-    def fake_client(auth):
+    def fake_client(auth, **_kw):
         seen_refresh.append(auth._store.load()["refresh_token"])
         tid = 2 if seen_refresh[-1] == "B-refresh" else 3
         return FakeGmail([_gmail_message(f"m-{tid}", f"s{tid}@x.com", "Hi", "body")])
@@ -150,7 +150,7 @@ def test_bootstrap_watermark_skips_older_mail(tmp_path, monkeypatch):
     _link(rt, b_id, "B-refresh")
 
     old = datetime.now(UTC) - timedelta(days=2)
-    monkeypatch.setattr(poller, "GmailClient", lambda auth: FakeGmail([
+    monkeypatch.setattr(poller, "GmailClient", lambda auth, **_kw: FakeGmail([
         _gmail_message("old", "s@x.com", "Old", "body", when=old),
         _gmail_message("new", "s@x.com", "New", "body"),
     ]))
@@ -173,7 +173,7 @@ def test_first_poll_does_not_replay_an_existing_inbox(tmp_path, monkeypatch):
     b_id = _new_tenant(rt, "b@example.com")
     _link(rt, b_id, "B-refresh")
 
-    monkeypatch.setattr(poller, "GmailClient", lambda auth: FakeGmail([
+    monkeypatch.setattr(poller, "GmailClient", lambda auth, **_kw: FakeGmail([
         _gmail_message("already-there", "s@x.com", "Old", "body",
                        when=datetime.now(UTC) - timedelta(hours=2)),
     ]))

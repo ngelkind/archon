@@ -66,7 +66,7 @@ async def _poll_tenant(rt: Runtime, tenant_id: int) -> int:
 
     store = TenantScope(rt.db, tenant_id)
     auth = google_integration.auth_for(rt, tenant_id)
-    client = GmailClient(auth)
+    client = GmailClient(auth, rt=rt)
     if tenant_id == _owner_id():
         # The single-user bot's out-of-band sends still expect this handle.
         rt.clients["gmail"] = client

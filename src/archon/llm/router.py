@@ -82,25 +82,25 @@ class Router:
             if not key:
                 raise ProviderError("no Anthropic API key configured")
             from .anthropic_api import AnthropicProvider
-            provider: Provider = AnthropicProvider(key)
+            provider: Provider = AnthropicProvider(key, rt=self.rt)
         elif name == "openai":
             key = db_key or s.openai_api_key
             if not key:
                 raise ProviderError("no OpenAI API key configured")
             from .openai_api import OpenAIProvider
-            provider = OpenAIProvider(key)
+            provider = OpenAIProvider(key, rt=self.rt)
         elif name == "gemini":
             key = db_key or s.gemini_api_key
             if not key:
                 raise ProviderError("no Gemini API key configured")
             from .gemini import GeminiProvider
-            provider = GeminiProvider(key)
+            provider = GeminiProvider(key, rt=self.rt)
         elif name == "openrouter":
             key = db_key or s.openrouter_api_key
             if not key:
                 raise ProviderError("no OpenRouter API key configured")
             from .openrouter import OpenRouterProvider
-            provider = OpenRouterProvider(key)
+            provider = OpenRouterProvider(key, rt=self.rt)
         elif name == "claude_code":
             from .claude_code import ClaudeCodeProvider
             provider = ClaudeCodeProvider()

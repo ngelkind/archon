@@ -413,12 +413,15 @@ class _FakeAsyncClient:
 
 
 def _patch_httpx(monkeypatch):
-    from archon.api import push as push_mod
+    # push now builds its client through the ledger factory; patch that seam so
+    # the fake still stands in for the transport (and records posts).
+    from archon.net import client as net_client
 
     _FakeAsyncClient.posts = []
     _FakeAsyncClient.fail_with = None
     _FakeAsyncClient.status_code = 200
-    monkeypatch.setattr(push_mod.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(net_client, "new_async_client",
+                        lambda *a, **kw: _FakeAsyncClient())
     return _FakeAsyncClient
 
 
