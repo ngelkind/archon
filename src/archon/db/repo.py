@@ -124,7 +124,7 @@ def chat_set_field(store: Store, pk: int, field: str, value: Any) -> None:
         raise ValueError(f"chat field not settable: {field}")
     sc = as_scope(store)
     sc.execute(
-        f"UPDATE chats SET {field} = ? WHERE id = ? AND tenant_id = ?",  # noqa: S608
+        f"UPDATE chats SET {field} = ? WHERE id = ? AND tenant_id = ?",
         (value, pk, sc.tenant_id),
     )
 
@@ -309,6 +309,14 @@ def pending_action_create(
         (sc.tenant_id, kind, payload_json, chat_pk, expires_at),
     )
     return int(cur.lastrowid)
+
+
+def pending_action_tenant(db: Db, action_id: int) -> int | None:
+    """Which tenant owns an action, looked up by its GLOBAL id. Used by the
+    confirm callback/notifier to route and resolve in the right tenant without
+    the caller having to already know it (the callback only carries the id)."""
+    row = db.query_one("SELECT tenant_id FROM pending_actions WHERE id = ?", (action_id,))
+    return int(row["tenant_id"]) if row else None
 
 
 def pending_action_get(store: Store, action_id: int) -> sqlite3.Row | None:
@@ -928,7 +936,7 @@ def message_search(store: Store, where_tail: str, params: tuple = ()) -> list[sq
     """
     sc = as_scope(store)
     return sc.query(
-        f"SELECT * FROM messages WHERE tenant_id = ? AND {where_tail}",  # noqa: S608
+        f"SELECT * FROM messages WHERE tenant_id = ? AND {where_tail}",
         (sc.tenant_id, *params),
     )
 
@@ -1457,7 +1465,7 @@ def log_outbox_mark_sent(db: Db, ids: list[int]) -> None:
     if not ids:
         return
     qs = ",".join("?" for _ in ids)
-    db.execute(  # noqa: S608 — ids are ints from our own rows
+    db.execute(
         f"UPDATE log_outbox SET sent_at = datetime('now') WHERE id IN ({qs})", tuple(ids))
 
 
@@ -1465,7 +1473,7 @@ def log_outbox_mark_failed(db: Db, ids: list[int], error: str) -> None:
     if not ids:
         return
     qs = ",".join("?" for _ in ids)
-    db.execute(  # noqa: S608 — ids are ints from our own rows
+    db.execute(
         f"UPDATE log_outbox SET attempts = attempts + 1, last_error = ? WHERE id IN ({qs})",
         (error[:300], *ids))
 

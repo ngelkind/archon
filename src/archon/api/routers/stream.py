@@ -17,6 +17,7 @@ import asyncio
 
 from fastapi import APIRouter, Query, WebSocket
 
+from ...db.tenancy import OWNER_TENANT_ID
 from ..auth import tenant_for_token
 
 router = APIRouter(tags=["stream"])
@@ -38,9 +39,21 @@ def _authenticate(websocket: WebSocket, token: str | None) -> int | None:
     return tenant_for_token(rt, raw)
 
 
-async def _forward(websocket: WebSocket, queue: asyncio.Queue) -> None:
+def _visible_to(event: dict, tenant_id: int) -> bool:
+    """A subscriber sees an event only if it belongs to their tenant. Untagged
+    events (system-wide: health, cost, net) are the owner's alone — never
+    fanned out to a product tenant's socket."""
+    et = (event.get("data") or {}).get("tenant_id")
+    if et is None:
+        return tenant_id == OWNER_TENANT_ID
+    return et == tenant_id
+
+
+async def _forward(websocket: WebSocket, queue: asyncio.Queue, tenant_id: int) -> None:
     while True:
-        await websocket.send_json(await queue.get())
+        event = await queue.get()
+        if _visible_to(event, tenant_id):
+            await websocket.send_json(event)
 
 
 async def _until_disconnect(websocket: WebSocket) -> None:
@@ -62,7 +75,7 @@ async def stream(websocket: WebSocket, token: str | None = Query(default=None)) 
 
     with rt.events.subscription() as queue:
         tasks = {
-            asyncio.create_task(_forward(websocket, queue)),
+            asyncio.create_task(_forward(websocket, queue, tenant_id)),
             asyncio.create_task(_until_disconnect(websocket)),
         }
         try:

@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Dispatcher, F
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..db import repo
@@ -68,11 +69,27 @@ class Outcome:
     ok: bool = True
 
 
+def _confirm_target(rt: Runtime, action_id: int) -> tuple[Any, int | None, Any]:
+    """Where a confirmation card goes: (bot, chat_id, store). The owner's action
+    goes to the owner over the control/notifier bot; a PRODUCT tenant's action
+    goes to THAT user's Telegram over the product bot — never to the owner, who
+    would otherwise receive (and could approve) a stranger's action."""
+    from ..db.tenancy import TenantScope
+
+    tenant_id = repo.pending_action_tenant(rt.db, action_id)
+    if tenant_id is None or tenant_id == OWNER_TENANT_ID:
+        return rt.send_bot(), rt.settings.telegram_owner_id, rt.db
+    scope = TenantScope(rt.db, tenant_id)
+    link = repo.telegram_link_get(scope)
+    target = int(link["tg_user_id"]) if link and link["tg_user_id"] else None
+    return rt.clients.get("product_bot"), target, scope
+
+
 async def _telegram_notifier(
     rt: Runtime, action_id: int, kind: str, description: str, payload: dict[str, Any]
 ) -> None:
-    bot: Bot | None = rt.send_bot()  # type: ignore[assignment]
-    if bot is None:
+    bot, chat_id, store = _confirm_target(rt, action_id)
+    if bot is None or not chat_id:
         rt.audit.note("confirm_no_control_bot", action_id=action_id)
         return
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
@@ -80,11 +97,11 @@ async def _telegram_notifier(
         InlineKeyboardButton(text="❌ Reject", callback_data=f"pa:{action_id}:no"),
     ]])
     sent = await bot.send_message(
-        rt.settings.telegram_owner_id,
+        chat_id,
         f"<b>Confirm: {html.escape(kind)}</b>\n{html.escape(description)}",
         reply_markup=keyboard,
     )
-    repo.pending_action_set_owner_msg(rt.db, action_id, sent.message_id)
+    repo.pending_action_set_owner_msg(store, action_id, sent.message_id)
 
 
 _NOTIFIERS.append(_telegram_notifier)
@@ -142,6 +159,7 @@ async def resolve_action(
     is a single atomic UPDATE, so only one caller ever runs the executor.
     """
     store = tenant.scope if tenant is not None else rt.db
+    tid = getattr(tenant, "tenant_id", OWNER_TENANT_ID)
     row = repo.pending_action_get(store, action_id)
     if row is None:
         return Outcome("unknown", "Already handled or unknown.", ok=False)
@@ -150,7 +168,7 @@ async def resolve_action(
     if row["expires_at"] < datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"):
         repo.pending_action_expire(store, action_id)
         rt.events.publish("approval.resolved", action_id=action_id,
-                          action_kind=row["kind"], status="expired", actor=actor)
+                          action_kind=row["kind"], status="expired", actor=actor, tenant_id=tid)
         return Outcome("expired", "Expired.", ok=False)
 
     approved = verdict == "ok"
@@ -163,7 +181,7 @@ async def resolve_action(
         rt.audit.note("confirm_rejected", action_id=action_id, kind=row["kind"],
                       actor=actor)
         rt.events.publish("approval.resolved", action_id=action_id,
-                          action_kind=row["kind"], status="rejected", actor=actor)
+                          action_kind=row["kind"], status="rejected", actor=actor, tenant_id=tid)
         return Outcome("rejected", "Rejected")
 
     rt.audit.note("confirm_approved", action_id=action_id, kind=row["kind"], actor=actor)
@@ -176,20 +194,50 @@ async def resolve_action(
         outcome = Outcome("approved", f"{type(exc).__name__}: {exc}", ok=False)
     rt.events.publish("approval.resolved", action_id=action_id,
                       action_kind=row["kind"], status="approved", ok=outcome.ok,
-                      actor=actor)
+                      actor=actor, tenant_id=tid)
     return outcome
+
+
+def _tenant_for_action(rt: Runtime, action_id: int) -> Any:
+    """The TenantContext an action must be resolved under, or None for the owner
+    (whose scope is the raw Db, exactly as before)."""
+    from ..tenant import tenant_context
+
+    tenant_id = repo.pending_action_tenant(rt.db, action_id)
+    if tenant_id is None or tenant_id == OWNER_TENANT_ID:
+        return None
+    return tenant_context(rt, tenant_id)
+
+
+def _tap_authorized(rt: Runtime, query: CallbackQuery, action_id: int) -> bool:
+    """On the control bot, the owner middleware already gated the tap. On the
+    PRODUCT bot there is no such gate, so a product user must not be able to
+    approve another tenant's action: their linked tenant must own it."""
+    tenant_id = repo.pending_action_tenant(rt.db, action_id)
+    if tenant_id is None or tenant_id == OWNER_TENANT_ID:
+        return True  # owner path — control-bot middleware is the gate
+    from ..integrations import telegram as tg_integration
+
+    tapper = query.from_user.id if query.from_user else None
+    return tapper is not None and tg_integration.tenant_for_user(rt, tapper) == tenant_id
 
 
 def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
     @dp.callback_query(F.data.startswith("pa:"))
     async def on_confirm(query: CallbackQuery) -> None:
-        # Ownership is enforced by the control dispatcher's outer middleware
-        # (control.build); a second check here would be a copy to drift.
+        # The owner's control dispatcher gates ownership in its outer middleware.
+        # The product dispatcher has no such gate, so we verify below that a
+        # product user only resolves their OWN tenant's action.
         try:
             _, raw_id, verdict = (query.data or "").split(":")
             action_id = int(raw_id)
         except ValueError:
             await query.answer("Malformed callback.")
+            return
+        if not _tap_authorized(rt, query, action_id):
+            rt.audit.note("confirm_cross_tenant_refused", action_id=action_id,
+                          tapper=(query.from_user.id if query.from_user else None))
+            await query.answer("Not yours.", show_alert=True)
             return
         # Acknowledge the tap NOW. Telegram invalidates a callback query after
         # ~15s, but the executor (a send/revoke, or a loop busy with big agent
@@ -200,7 +248,8 @@ def register_handlers(dp: Dispatcher, rt: Runtime) -> None:
         except Exception:  # noqa: BLE001
             pass
 
-        outcome = await resolve_action(rt, action_id, verdict, actor="telegram")
+        outcome = await resolve_action(rt, action_id, verdict, actor="telegram",
+                                       tenant=_tenant_for_action(rt, action_id))
         # No second query.answer() here: the early ack above already consumed
         # this callback query, so answering again only logs an error.
         if outcome.status in ("unknown", "already"):

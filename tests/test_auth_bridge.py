@@ -314,10 +314,14 @@ def test_stream_accepts_a_jwt(tmp_path):
     rt = _rt(tmp_path)
     client = TestClient(build_app(rt))
     token = _signup(client)
+    tenant_id = client.get("/auth/me", headers=_jwt_headers(token)).json()["id"]
 
     with client.websocket_connect(f"/stream?token={token}") as ws:
-        rt.events.publish("health.change", subsystem="api", state="running")
-        assert ws.receive_json()["kind"] == "health.change"
+        # A JWT is accepted here, and the socket delivers this tenant's own
+        # events. Untagged system events (health/cost/net) are owner-only and
+        # are NOT fanned out to a product user's socket — so tag this one.
+        rt.events.publish("approval.pending", action_id=1, tenant_id=tenant_id)
+        assert ws.receive_json()["data"]["tenant_id"] == tenant_id
 
 
 def test_stream_still_rejects_rubbish(tmp_path):

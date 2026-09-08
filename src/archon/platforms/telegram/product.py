@@ -114,6 +114,13 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
     from . import business
 
     business.register(dp, rt)
+    # A product user's confirmation cards are sent to THEM over this bot, so the
+    # approve/reject callback must be handled here too. Without it a product
+    # user's tap reached nothing; the handler resolves in their tenant and
+    # refuses a tap on another tenant's action.
+    from ...pipeline import confirm
+
+    confirm.register_handlers(dp, rt)
     return bot, dp
 
 
