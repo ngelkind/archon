@@ -41,6 +41,7 @@ def register(registry: Registry) -> None:
         },
         sensitive=True,
     )
+    # TODO(TOS-REVIEW): All platforms — lets the owner enable ephemeral-media capture on a chat — review before launch
     async def capture_add(ctx: ToolContext, platform: str, chat_id: str) -> str:
         row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:

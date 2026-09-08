@@ -14,6 +14,7 @@ from ...runtime import Runtime
 _WA_VIDEO_LIMIT = 60 * 1024 * 1024
 
 
+# TODO(TOS-REVIEW): WhatsApp — downloads third-party media on command and re-sends it as the owner via an unofficial client — review before launch
 def is_wa_download(text: str | None) -> str | None:
     if not text:
         return None

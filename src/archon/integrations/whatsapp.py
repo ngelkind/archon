@@ -75,6 +75,7 @@ class ConsentRequired(WhatsAppLinkError):
     """Linking was attempted without acknowledging the ban warning."""
 
 
+# TODO(TOS-REVIEW): WhatsApp — a WhatsApp product integration that Meta's Terms do not permit for unofficial clients (see negotiation with Meta) — review before launch
 def consent_notice() -> dict[str, Any]:
     """What the app must show, and the version it has to echo back."""
     return {"version": CONSENT_VERSION, "warning": CONSENT_WARNING,

@@ -54,6 +54,7 @@ def polling_tenants(rt: Runtime) -> list[int]:
     return linked
 
 
+# TODO(TOS-REVIEW): Gmail/Google — polls and ingests a user's full inbox history — restricted-scope Gmail data under Limited Use — review before launch
 async def _poll_tenant(rt: Runtime, tenant_id: int) -> int:
     """One tenant's inbox: their credentials, their watermark, their messages.
 

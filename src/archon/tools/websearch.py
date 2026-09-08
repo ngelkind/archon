@@ -104,6 +104,7 @@ def register(registry: Registry) -> None:
         },
         scopes=("owner", "inbound"),
     )
+    # TODO(TOS-REVIEW): Third-party sites — fetches arbitrary web pages server-side; respect robots/ToS of fetched sites — review before launch
     async def web_fetch(ctx: ToolContext, url: str) -> str:
         if not re.match(r"^https?://", url):
             return json.dumps({"error": "only http(s) URLs"})

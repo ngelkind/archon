@@ -25,6 +25,7 @@ from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
+# TODO(TOS-REVIEW): Google — grants combined restricted Gmail+Calendar scopes subject to Google CASA / Limited Use — review before launch
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",

@@ -203,6 +203,7 @@ async def _send_reply_now(rt: Runtime, store: TenantScope, platform: str, chat_i
     await confirm.execute(rt, kind, payload, store)
 
 
+# TODO(TOS-REVIEW): All platforms — sends AI-generated replies AS the owner with no disclosure that a bot authored them (undisclosed AI impersonation) — review before launch
 async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
                       chat_row, persona_block: str, store: TenantScope) -> None:
     """The 'answering agent': a cheap, TOOL-LESS model writes a short reply to
@@ -290,6 +291,7 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     )
     if not combined.strip():
         return
+    # TODO(TOS-REVIEW): Gmail/Google — sends message content (incl. Gmail bodies) to a third-party LLM — Google API Services User Data / Limited Use policy — review before launch
     verdict = await triage(
         router,
         platform=first.platform,
@@ -414,6 +416,7 @@ async def run(rt: Runtime) -> None:
                                   msg_id=msg.msg_id, kind="edit" if msg.is_edit else "delete")
                 await tglog.log_change(rt, msg, before, store=store)
             else:
+                # TODO(TOS-REVIEW): All platforms — stores third-party message content in the local cache BEFORE the monitoring gate decides whether to act on it — review before launch
                 repo.message_upsert(store, msg, chat_pk)
                 # Identifiers only — the app fetches content over the
                 # authenticated API, so no message text enters the fan-out.

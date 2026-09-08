@@ -54,6 +54,7 @@ def maybe_redact(rt: Runtime, text: str) -> str:
     return scrubbed.text if hasattr(scrubbed, "text") else str(scrubbed)
 
 
+# TODO(TOS-REVIEW): Telegram — republishes another user's deleted or edited message (their retraction) into the owner's log channel — review before launch
 def render_card(rt: Runtime, *, kind: str, platform: str, chat_label: str,
                 sender: str, before: str | None, after: str | None) -> str | None:
     """The card text, PII-redacted per setting. Returns None only if redaction

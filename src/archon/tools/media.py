@@ -8,6 +8,7 @@ from ..platforms import downloader
 from .registry import Registry, ToolContext
 
 
+# TODO(TOS-REVIEW): YouTube/other — downloads remote video for the agent to attach/send (platform ToS on downloading) — review before launch
 def register(registry: Registry) -> None:
     @registry.tool(
         "download_video",

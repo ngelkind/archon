@@ -25,6 +25,7 @@ from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
+# TODO(TOS-REVIEW): Google — requests restricted Gmail scopes subject to Google's CASA security assessment and Limited Use — review before launch
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",

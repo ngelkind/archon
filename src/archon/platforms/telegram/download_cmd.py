@@ -101,6 +101,7 @@ async def handle_group_userbot(rt: Runtime, client, chat_id: str, message_id: in
                           f"{type(exc).__name__}")
 
 
+# TODO(TOS-REVIEW): YouTube/other — downloads third-party video on command and re-sends it (platform ToS on downloading/redistribution) — review before launch
 def is_download_command(text: str | None) -> str | None:
     """Return the URL if text is a /download command, else None."""
     if not text:

@@ -73,6 +73,7 @@ class AuditLog:
             "sender": sender_id,
             "allowed": allowed,
         }
+        # TODO(TOS-REVIEW): All platforms — writes third-party message text to a local audit log when store_content is on — review before launch
         if allowed and self.store_content and text is not None:
             record["text"] = text
         self._write(record, tenant_id)

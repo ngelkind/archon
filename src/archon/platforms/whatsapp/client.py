@@ -26,6 +26,7 @@ _CONNECT_POLL_S = 0.1
 WATCHDOG_S = 30.0
 
 
+# TODO(TOS-REVIEW): WhatsApp — presents the bot as an Android phone companion (spoofed device identity) so the server delivers phone-only media — review before launch
 def _android_props():
     """Present as an Android PHONE companion (DeviceProps.PlatformType side).
 

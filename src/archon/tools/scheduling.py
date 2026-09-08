@@ -109,6 +109,7 @@ def register(registry: Registry) -> None:
         },
         sensitive=True,
     )
+    # TODO(TOS-REVIEW): Third-party sites — downloads arbitrary remote images to attach to sends — review before launch
     async def attach_image_from_url(ctx: ToolContext, url: str) -> str:
         if not re.match(r"^https?://", url):
             return json.dumps({"error": "only http(s) URLs"})

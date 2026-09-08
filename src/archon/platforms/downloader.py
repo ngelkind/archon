@@ -58,6 +58,7 @@ def _download_sync(url: str, out_dir: Path, max_bytes: int) -> DownloadedVideo:
         # YouTube blocks datacenter IPs on the default 'web' client with
         # "Sign in to confirm you're not a bot". These player clients avoid
         # that check without cookies. If a cookies file is present, use it too.
+        # TODO(TOS-REVIEW): YouTube/other — passes player-client args and optional cookies to bypass YouTube's bot check (circumvents platform access controls) — review before launch
         "extractor_args": {
             "youtube": {"player_client": ["tv", "ios", "mweb", "android_vr", "web"]}
         },

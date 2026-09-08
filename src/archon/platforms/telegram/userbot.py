@@ -47,6 +47,7 @@ def _norm_chat_id(chat_id: int) -> str:
     return str(chat_id)
 
 
+# TODO(TOS-REVIEW): Telegram — detects self-destruct (TTL) media — review before launch
 def _ephemeral_kind(msg: Any) -> str | None:
     """Return the media kind if the message is self-destruct (ttl), else None."""
     media = getattr(msg, "media", None)
@@ -160,6 +161,7 @@ def wire_events(rt: Runtime, client: Any) -> None:
             is_edit=is_edit,
         )
 
+    # TODO(TOS-REVIEW): Telegram — captures and saves self-destruct (TTL) media the sender intended to vanish — review before launch
     async def _capture_ephemeral(event: Any, chat_kind: str) -> None:
         from ...logging_ import capture
 

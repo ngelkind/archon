@@ -65,6 +65,7 @@ def _owner_tg_id(rt: Runtime, tenant_id: int) -> str | None:
     return row["tg_user_id"] if row else None
 
 
+# TODO(TOS-REVIEW): Telegram — ingests Telegram Business private-chat messages (both directions) and can send as the connected account — review before launch
 def _to_inbound(rt: Runtime, message: Message, *, is_edit: bool = False,
                 tenant_id: int = OWNER_TENANT_ID) -> InboundMessage:
     sender = message.from_user

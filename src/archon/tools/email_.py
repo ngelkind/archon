@@ -81,6 +81,7 @@ def register(registry: Registry) -> None:
         scopes=("owner",),
         sensitive=True,
     )
+    # TODO(TOS-REVIEW): Gmail/Google — sends email as the owner via a restricted Gmail scope (Limited Use) — review before launch
     async def email_send(ctx: ToolContext, **kwargs: Any) -> str:
         return await _send_or_confirm(ctx, {k: v for k, v in kwargs.items() if v})
 

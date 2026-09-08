@@ -131,6 +131,7 @@ def chat_set_field(store: Store, pk: int, field: str, value: Any) -> None:
 
 # --- message cache ----------------------------------------------------------
 
+# TODO(TOS-REVIEW): All platforms — retains third-party message content indefinitely with no expiry policy — review before launch
 def message_upsert(store: Store, msg: InboundMessage, chat_pk: int) -> None:
     sc = as_scope(store)
     sc.execute(

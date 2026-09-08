@@ -67,6 +67,7 @@ def _flatten(messages: list[ChatMessage]) -> str:
     return "\n\n".join(parts)
 
 
+# TODO(TOS-REVIEW): LLM provider — routes user content through the Claude Code subscription transport — confirm this usage is within its terms — review before launch
 class ClaudeCodeProvider:
     name = "claude_code"
     supports_tools = False

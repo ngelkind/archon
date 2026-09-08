@@ -41,6 +41,7 @@ _EDIT = 14
 _VO_CONTAINERS = ("viewOnceMessageV2", "viewOnceMessageV2Extension", "viewOnceMessage")
 
 
+# TODO(TOS-REVIEW): WhatsApp — unwraps view-once media so it can be stored/forwarded, defeating the sender's one-view intent — review before launch
 def unwrap_view_once(message: Any) -> tuple[Any, bool]:
     """If ``message`` is a view-once container, return (inner_message, True);
     otherwise (message, False). The inner message holds the real media."""
@@ -211,6 +212,7 @@ def from_message_event(event: Any) -> InboundMessage | None:
         target_id = msg_id
 
         # Deletions (revokes) and some edits arrive as protocolMessage.
+        # TODO(TOS-REVIEW): WhatsApp — intercepts revoke (delete) and edit events to log content the sender withdrew — review before launch
         if "protocolMessage" in payload_kinds:
             proto = message.protocolMessage
             proto_type = int(getattr(proto, "type", -1))

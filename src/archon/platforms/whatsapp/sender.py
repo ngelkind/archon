@@ -41,6 +41,7 @@ def _to_jid(raw: str) -> Any:
     return build_jid(user, server or "s.whatsapp.net")
 
 
+# TODO(TOS-REVIEW): WhatsApp — simulates human typing presence proportional to message length before an automated send — review before launch
 async def send_text(rt: Runtime, chat_jid: str, text: str, store: Any = None) -> str:
     from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 
@@ -90,6 +91,7 @@ async def send_image(rt: Runtime, chat_jid: str, image_path: str,
     return msg_id
 
 
+# TODO(TOS-REVIEW): WhatsApp — controls read receipts programmatically (send/suppress) on an unofficial client — review before launch
 async def mark_read(rt: Runtime, chat_jid: str, message_ids: list[str],
                     sender_jid: str | None = None) -> None:
     """Send read receipts. neonize 0.4.3's signature is

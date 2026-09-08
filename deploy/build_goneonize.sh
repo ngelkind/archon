@@ -37,6 +37,7 @@ grep -q "version := \"$NEONIZE_TAG\"" version.go \
   || { echo "ERROR: failed to pin version in version.go" >&2; exit 1; }
 
 # --- Inject the SendPeerMessage export (idempotent: fresh clone each run) ---
+# TODO(TOS-REVIEW): WhatsApp — injects a SendPeerMessage export into a patched whatsmeow/neonize build (reads media without a visible receipt) — review before launch
 if grep -q "//export SendPeerMessage" main.go; then
   echo "SendPeerMessage already present, skipping injection."
 else

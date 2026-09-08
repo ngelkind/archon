@@ -21,6 +21,7 @@ Rules:
 - Times: assume the owner's local timezone unless stated otherwise.
 """
 
+# TODO(TOS-REVIEW): All platforms — persona prompt drafts replies in the owner's voice — undisclosed AI authorship / impersonation risk — review before launch
 INBOUND_AGENT_SYSTEM = """\
 You are Archon, an assistant processing a message that arrived on the owner's
 {platform} in the chat "{chat_name}". You have a restricted toolset: you can

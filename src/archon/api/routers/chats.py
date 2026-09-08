@@ -125,6 +125,7 @@ async def patch_chat(pk: int, patch: ChatPatch, request: Request,
 
 
 @router.get("/chats/{pk}/messages", response_model=list[Message])
+# TODO(TOS-REVIEW): All platforms — exposes stored third-party message content over the API — review before launch
 async def chat_messages(
     pk: int, request: Request, limit: int = Query(default=50, ge=1, le=500),
     tenant_id: int = Depends(require_tenant),

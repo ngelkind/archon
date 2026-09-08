@@ -22,6 +22,7 @@ from ..runtime import Runtime
 _PLATFORM_LABEL = {"wa": "WhatsApp", "tg": "Telegram"}
 
 
+# TODO(TOS-REVIEW): All platforms — captures view-once / self-destruct media intended to be ephemeral — review before launch
 def capture_enabled(rt: Runtime, platform: str, chat_id: str, chat_kind: str) -> bool:
     row = repo.chat_get(rt.db, platform, chat_id)
     if row is not None and row["capture_media"]:

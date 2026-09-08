@@ -79,6 +79,7 @@ class PasswordRequired(UserbotLinkError):
     """The account has 2FA; a password is needed to finish signing in."""
 
 
+# TODO(TOS-REVIEW): Telegram — operates a user account (userbot) over MTProto with a shared api_id — automation Telegram restricts — review before launch
 def consent_notice() -> dict[str, Any]:
     return {
         "version": CONSENT_VERSION,

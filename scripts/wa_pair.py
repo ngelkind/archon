@@ -22,6 +22,7 @@ SESSION = "/opt/archon/secrets/wa/session.db"
 QR_PNG = "/opt/archon/secrets/wa/pair_qr.png"
 
 
+# TODO(TOS-REVIEW): WhatsApp — pairs an unofficial WhatsApp client presenting a spoofed device — confirm the account owner consents — review before launch
 def _android_props():
     # Pair as an Android PHONE so WhatsApp delivers view-once media to this
     # companion (the goneonize build forces the matching UserAgent.Platform +

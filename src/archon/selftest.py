@@ -15,6 +15,7 @@ from typing import Any
 from .platforms import downloader
 from .runtime import Runtime
 
+# TODO(TOS-REVIEW): All platforms — hardcoded test number / username / TikTok URL — move to settings and confirm consent before any live run — review before launch
 WA_TEST = "972555000003@s.whatsapp.net"
 TG_TEST = "example_test_account"  # username without @
 TIKTOK = "https://www.tiktok.com/@scout2015/video/6718335390845095173"
