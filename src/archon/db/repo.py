@@ -342,6 +342,21 @@ def pending_action_expire(store: Store, action_id: int) -> None:
     )
 
 
+def pending_actions_expire_due(db: Db, now: str) -> list[sqlite3.Row]:
+    """Expire every overdue pending action across all tenants and return the
+    rows that just expired (so the caller can publish an event / re-ping).
+    Nothing swept them before: expiry only happened lazily when the owner
+    tapped a stale button, so ignored cards sat 'pending' forever."""
+    rows = db.query(
+        "SELECT id, tenant_id, kind, chat_pk FROM pending_actions "
+        "WHERE status = 'pending' AND expires_at <= ?", (now,))
+    if rows:
+        db.execute(
+            "UPDATE pending_actions SET status = 'expired' "
+            "WHERE status = 'pending' AND expires_at <= ?", (now,))
+    return rows
+
+
 def pending_action_set_owner_msg(store: Store, action_id: int, owner_msg_id: int) -> None:
     sc = as_scope(store)
     sc.execute(

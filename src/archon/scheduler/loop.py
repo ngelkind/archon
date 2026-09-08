@@ -65,8 +65,26 @@ async def _fire_pending_replies(rt: Runtime) -> None:
             repo.pending_reply_set_status(scope, row["id"], "sent")
             rt.audit.note("delayed_reply_sent", id=row["id"])
         except Exception as exc:  # noqa: BLE001
-            repo.pending_reply_set_status(scope, row["id"], "cancelled")
+            # 'failed', not 'cancelled': the draft is kept and the error is
+            # visible, so pending_replies_list can show what went wrong instead
+            # of the reply silently vanishing.
+            repo.pending_reply_set_status(scope, row["id"], "failed")
             rt.audit.note("delayed_reply_failed", id=row["id"], error=repr(exc)[:200])
+
+
+async def _expire_stale_approvals(rt: Runtime) -> None:
+    expired = repo.pending_actions_expire_due(rt.db, _now())
+    for row in expired:
+        rt.events.publish("approval.resolved", action_id=int(row["id"]),
+                          action_kind=row["kind"], status="expired", actor="sweep")
+        rt.audit.note("confirm_expired", action_id=int(row["id"]), kind=row["kind"],
+                      tenant_id=int(row["tenant_id"]))
+
+
+async def _sweep_idle_sessions(rt: Runtime) -> None:
+    sweep = getattr(getattr(rt, "sessions", None), "sweep", None)
+    if sweep is not None:
+        await sweep()
 
 
 async def run(rt: Runtime) -> None:
@@ -75,6 +93,8 @@ async def run(rt: Runtime) -> None:
         try:
             await _fire_scheduled(rt)
             await _fire_pending_replies(rt)
+            await _expire_stale_approvals(rt)
+            await _sweep_idle_sessions(rt)
         except Exception as exc:  # noqa: BLE001
             rt.audit.note("scheduler_error", error=repr(exc)[:300])
         await asyncio.sleep(_TICK_S)
