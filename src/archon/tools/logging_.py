@@ -22,7 +22,14 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def log_channel_set(ctx: ToolContext, channel_id: str) -> str:
-        value = int(channel_id) if channel_id.strip() else None
+        raw = str(channel_id).strip()  # a JSON number would crash .strip()
+        if not raw:
+            repo.setting_set(ctx.store, "log.channel_id", None)
+            return json.dumps({"ok": True, "log_channel_id": None})
+        try:
+            value = int(raw)
+        except ValueError:
+            return json.dumps({"error": "channel_id must be a numeric id like -1001234567890"})
         repo.setting_set(ctx.store, "log.channel_id", value)
         return json.dumps({"ok": True, "log_channel_id": value})
 
@@ -32,12 +39,22 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def log_channel_test(ctx: ToolContext) -> str:
+        from ..logging_.send import throttled_send
+
         channel = repo.setting_get(ctx.store, "log.channel_id",
                                    ctx.rt.settings.tg_log_channel_id)
-        bot = ctx.rt.clients.get("control_bot")
-        if not channel or bot is None:
-            return json.dumps({"error": "no channel configured or bot not running"})
-        await bot.send_message(int(channel), "🧪 Archon log channel test — OK")  # type: ignore[attr-defined]
+        if not channel:
+            return json.dumps({"error": "no log channel configured — set one with log_channel_set"})
+        if ctx.rt.send_bot() is None:
+            return json.dumps({"error": "the notifier bot is not running"})
+        # Go through the throttled sender (own session, rebuilds on failure) —
+        # the control-bot handle's aiohttp session is closed by its poll loop.
+        result = await throttled_send(
+            ctx.rt, lambda b: b.send_message(int(channel), "🧪 Archon log channel test — OK"),
+            kind="log_test")
+        if result is None:
+            return json.dumps({"error": f"could not post to channel {channel} — "
+                               "is the bot an admin there?"})
         return json.dumps({"ok": True, "channel": channel})
 
     @registry.tool(

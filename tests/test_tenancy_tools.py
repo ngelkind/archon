@@ -57,8 +57,8 @@ def _two_tenants(tmp_path):
 def test_tool_reads_return_only_the_calling_tenants_rows(tmp_path):
     rt, b_id = _two_tenants(tmp_path)
 
-    a_chats = json.loads(_call(rt, OWNER_TENANT_ID, "chat_list"))
-    b_chats = json.loads(_call(rt, b_id, "chat_list"))
+    a_chats = json.loads(_call(rt, OWNER_TENANT_ID, "chat_list"))["chats"]
+    b_chats = json.loads(_call(rt, b_id, "chat_list"))["chats"]
     # Each tenant sees its own seeded chat plus its OWN control/mind chat, which
     # building the context creates — and never the other tenant's.
     assert "Family-A" in [c["name"] for c in a_chats]

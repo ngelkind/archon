@@ -234,11 +234,13 @@ def test_a_tool_dispatched_by_a_jwt_user_acts_as_them(tmp_path):
     assert "Family-OWNER" not in r.json()["result"]
 
     r2 = client.post("/tools/settings_set",
-                     json={"args": {"key": "tz", "value_json": '"Europe/London"'}},
+                     json={"args": {"key": "calendar.default_id",
+                                    "value_json": '"work@group.calendar.google.com"'}},
                      headers=_jwt_headers(token))
     assert r2.status_code == 200
-    assert repo.setting_get(TenantScope(rt.db, a_id), "tz") == "Europe/London"
-    assert repo.setting_get(owner_scope(rt.db), "tz") is None
+    assert repo.setting_get(TenantScope(rt.db, a_id), "calendar.default_id") \
+        == "work@group.calendar.google.com"
+    assert repo.setting_get(owner_scope(rt.db), "calendar.default_id") is None
 
 
 def test_isolation_would_catch_a_regression(tmp_path, monkeypatch):

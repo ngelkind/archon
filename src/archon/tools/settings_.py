@@ -9,10 +9,25 @@ import json
 from ..db import repo
 from .registry import Registry, ToolContext
 
-
 #: The only send policies the gates understand. Anything else is treated as
 #: "confirm" by the send paths — a policy nobody recognises must fail CLOSED.
 SEND_POLICIES = frozenset({"free", "confirm"})
+
+#: Settings the tools understand. A typo used to write a dead row and report
+#: ok:true. llm.model.* / llm.key.* are prefixes and validated separately.
+KNOWN_SETTING_KEYS = frozenset({
+    "gmail.triage_enabled", "gmail.include_self", "log.channel_id", "log.redact_pii",
+    "log.groups_default", "log.coalesce_seconds", "calendar.default_id",
+    "monitor.private_chats", "monitor.groups", "monitor.include_own_messages",
+    "wa.send_delay_min_s", "wa.send_delay_max_s", "capture.all_dms",
+    "llm.active_provider", "llm.daily_budget_usd", "whatsapp.enabled",
+})
+
+_SECRET_KEY_MARKERS = (".key.", "llm.key", "secret", "token")
+
+
+def _mask(key: str, value):
+    return "•••" if any(m in key for m in _SECRET_KEY_MARKERS) else value
 
 
 def effective_send_policy(row) -> str:
@@ -60,13 +75,17 @@ def register(registry: Registry) -> None:
     )
     async def chat_list(ctx: ToolContext, platform: str = "") -> str:
         rows = repo.chat_list(ctx.store, platform=platform or None)
-        return json.dumps([
+        shown = rows[:200]
+        chats = [
             {"platform": r["platform"], "chat_id": r["chat_id"], "name": r["name"],
              "kind": r["kind"], "whitelisted": bool(r["is_whitelisted"]),
              "auto_reply": bool(r["auto_reply"]), "send_policy": r["send_policy"],
+             "log_deletes": bool(r["log_deletes"]),
              "image_recognition": bool(r["image_recognition"])}
-            for r in rows[:200]
-        ], ensure_ascii=False)
+            for r in shown
+        ]
+        return json.dumps({"total": len(rows), "shown": len(shown), "chats": chats},
+                          ensure_ascii=False)
 
     @registry.tool(
         "chat_find",
@@ -221,12 +240,12 @@ def register(registry: Registry) -> None:
     )
     async def settings_get(ctx: ToolContext, key: str = "") -> str:
         if key:
-            return json.dumps({key: repo.setting_get(ctx.store, key)}, ensure_ascii=False)
+            return json.dumps({key: _mask(key, repo.setting_get(ctx.store, key))},
+                              ensure_ascii=False)
         rows = repo.setting_all(ctx.store)
         redacted = {}
         for r in rows:
-            redacted[r["key"]] = "•••" if ".key." in r["key"] or r["key"].startswith("llm.key") \
-                else json.loads(r["value_json"])
+            redacted[r["key"]] = _mask(r["key"], json.loads(r["value_json"]))
         return json.dumps(redacted, ensure_ascii=False)
 
     @registry.tool(
@@ -246,9 +265,16 @@ def register(registry: Registry) -> None:
         sensitive=True,
     )
     async def settings_set(ctx: ToolContext, key: str, value_json: str) -> str:
+        if key not in KNOWN_SETTING_KEYS and not key.startswith(("llm.model.", "llm.key.")):
+            import difflib
+
+            near = difflib.get_close_matches(key, sorted(KNOWN_SETTING_KEYS), n=3)
+            return json.dumps({"error": f"unknown setting key: {key}",
+                               "did_you_mean": near}, ensure_ascii=False)
         try:
             value = json.loads(value_json)
         except json.JSONDecodeError:
             value = value_json  # treat as plain string
         repo.setting_set(ctx.store, key, value)
-        return json.dumps({"ok": True, "key": key, "value": value}, ensure_ascii=False)
+        return json.dumps({"ok": True, "key": key, "value": _mask(key, value)},
+                          ensure_ascii=False)

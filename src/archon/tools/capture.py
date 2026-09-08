@@ -44,12 +44,12 @@ def register(registry: Registry) -> None:
     async def capture_add(ctx: ToolContext, platform: str, chat_id: str) -> str:
         row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
-            # Upsert so an as-yet-unseen chat can be armed (e.g. a known group).
-            pk = repo.chat_upsert(ctx.store, platform, chat_id, None,
-                                  "group" if chat_id.endswith(("@g.us",)) or chat_id.startswith("-")
-                                  else "private")
-        else:
-            pk = row["id"]
+            # Fabricating a row for any string armed a chat that never fired and
+            # reported ok:true. Require the chat to exist (resolve with chat_find
+            # / wa_list_groups first).
+            return json.dumps({"error": f"unknown chat {platform}:{chat_id} — "
+                               "resolve it with chat_find or wa_list_groups first"})
+        pk = row["id"]
         repo.chat_set_field(ctx.store, pk, "capture_media", 1)
         return json.dumps({"ok": True, "chat": (row["name"] if row else chat_id),
                            "capture": True})

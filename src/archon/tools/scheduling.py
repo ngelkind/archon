@@ -149,6 +149,10 @@ def register(registry: Registry) -> None:
     )
     async def delay_policy_set(ctx: ToolContext, platform: str, chat_id: str,
                                mode: str, min_s: float = 0, max_s: float = 0) -> str:
+        if mode not in ("none", "fixed", "random"):
+            # parse_policy silently degrades an unknown mode to "none", so the
+            # stored row and the reported policy disagreed. Reject it up front.
+            return json.dumps({"error": "mode must be one of none|fixed|random"})
         row = repo.chat_get(ctx.store, platform, chat_id)
         if row is None:
             return json.dumps({"error": "unknown chat"})
