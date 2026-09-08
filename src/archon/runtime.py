@@ -45,6 +45,9 @@ class Runtime:
     # each, so an owner command can restart one (app.start_subsystem).
     subsystems: dict[str, object] = field(default_factory=dict)
     tasks: dict[str, object] = field(default_factory=dict)
+    # Injection points for tests and ad-hoc state: e.g. "wa_client" -> a
+    # callable returning the neonize client to use instead of the real one.
+    factories: dict[str, object] = field(default_factory=dict)
     # Wired in app.build_runtime after construction (circular-import avoidance):
     # llm.router.Router, tools.registry.Registry, and the control-bot text
     # handler. Typed as Any deliberately.

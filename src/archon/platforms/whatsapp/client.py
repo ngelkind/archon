@@ -151,7 +151,11 @@ async def _capture_quoted_view_once(rt: Runtime, client: Any, event: Any, inboun
 
 
 def build_client(rt: Runtime) -> Any:
-    """The real neonize async client over the owner's session file."""
+    """The real neonize async client over the owner's session file (or the
+    test double registered under ``rt.factories["wa_client"]``)."""
+    factory = rt.factories.get("wa_client")
+    if factory is not None:
+        return factory(rt)  # type: ignore[operator]
     from neonize.aioze.client import NewAClient
 
     session = rt.settings.wa_session_path
@@ -361,7 +365,8 @@ async def run(rt: Runtime, client: Any = None) -> None:
         rt.health["whatsapp"] = "disabled (whatsapp.enabled=false)"
         return
     session_path = rt.settings.wa_session_path
-    if client is None and not session_path.exists():
+    injected = "wa_client" in rt.factories
+    if client is None and not injected and not session_path.exists():
         rt.health["whatsapp"] = "no session (see deploy/MIGRATION.md step 5)"
         return  # clean return: supervisor will not restart-loop
     if client is None:

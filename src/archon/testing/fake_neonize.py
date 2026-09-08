@@ -147,6 +147,21 @@ class _Me:
     JID: npb.JID
 
 
+class _EventHub:
+    def __init__(self, client: FakeAClient) -> None:
+        self._client = client
+
+    def __call__(self, ev_type: type):
+        def deco(fn):
+            self._client._register(ev_type, fn)
+            return fn
+        return deco
+
+    def qr(self, fn: Any) -> Any:
+        self._client._qr_callback = fn
+        return fn
+
+
 class FakeAClient:
     """Mirrors ``neonize.aioze.client.NewAClient`` at the seam Archon uses."""
 
@@ -173,11 +188,19 @@ class FakeAClient:
 
     # --- registration ------------------------------------------------------------
 
-    def event(self, ev_type: type):
-        def deco(fn):
-            self.handlers.setdefault(ev_type, []).append(fn)
-            return fn
-        return deco
+    @property
+    def event(self) -> _EventHub:
+        """neonize's ``client.event`` is both the ``@client.event(EvType)``
+        decorator and the holder of ``client.event.qr(callback)``."""
+        return _EventHub(self)
+
+    def _register(self, ev_type: type, fn: Any) -> None:
+        self.handlers.setdefault(ev_type, []).append(fn)
+
+    async def emit_qr(self, data: bytes = b"2@fakeqr,ref,key") -> None:
+        cb = getattr(self, "_qr_callback", None)
+        if cb is not None:
+            await cb(self, data)
 
     async def fire(self, ev: Any) -> None:
         for fn in self.handlers.get(type(ev), []):

@@ -227,6 +227,13 @@ class FakeBotApi:
                 data = json.loads(await request.text() or "{}")
             except ValueError:
                 data = {}
+        # aiogram uploads a file under a random part name and references it as
+        # "attach://<name>" from the real field; expose it under both.
+        for key, value in list(data.items()):
+            if isinstance(value, str) and value.startswith("attach://"):
+                part = value.removeprefix("attach://")
+                if part in files:
+                    files[key] = files[part]
         call = Call(method=method, data=data, files=files)
         self.calls.append(call)
 

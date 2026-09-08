@@ -148,6 +148,31 @@ def build(rt: Runtime) -> tuple[Bot, Dispatcher]:
         for start in range(0, len(report), 3900):
             await message.answer(html.escape(report[start:start + 3900]))
 
+    @dp.message(Command("wa_pair"))
+    async def cmd_wa_pair(message: Message) -> None:
+        from aiogram.types import BufferedInputFile
+
+        from ...platforms.whatsapp import pairing
+
+        if pairing.in_progress(rt):
+            await message.answer("A WhatsApp pairing attempt is already running.")
+            return
+        await message.answer(
+            "Stopping WhatsApp and requesting a QR code. On your phone: WhatsApp → "
+            "Linked devices → Link a device, then scan the code I post. Each code is "
+            "valid for about 20 seconds; I will post a fresh one when it rotates."
+        )
+
+        async def on_qr(png: bytes, n: int) -> None:
+            await message.answer_photo(
+                BufferedInputFile(png, filename=f"wa-qr-{n}.png"),
+                caption=f"WhatsApp QR #{n} — scan now (valid ~20 s)")
+
+        outcome = await pairing.pair(rt, on_qr=on_qr)
+        icon = "✅" if outcome.status in ("paired", "already_paired") else "⚠️"
+        await message.answer(f"{icon} WhatsApp pairing: {outcome.status} — "
+                             f"{html.escape(outcome.detail)}")
+
     @dp.message(Command("pair"))
     async def cmd_pair(message: Message) -> None:
         from datetime import UTC, datetime, timedelta
@@ -274,6 +299,7 @@ async def run(rt: Runtime, *, handle_signals: bool = True,
             BotCommand(command="download", description="Download a video by URL"),
             BotCommand(command="pair", description="Pair a new control device"),
             BotCommand(command="selftest", description="Run internal self-tests"),
+            BotCommand(command="wa_pair", description="Re-pair WhatsApp by QR code"),
             BotCommand(command="help", description="What Archon can do"),
         ])
     except Exception as exc:  # noqa: BLE001 — a menu failure must not stop the bot

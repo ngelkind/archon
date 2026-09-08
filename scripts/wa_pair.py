@@ -33,7 +33,23 @@ def _android_props():
                            requireFullSync=False)
 
 
+def _refuse_if_service_running() -> None:
+    """Two clients on one session file fight (StreamReplaced) and can corrupt
+    it. The running bot has /wa_pair for this; use that instead."""
+    import shutil
+    import subprocess
+    import sys
+
+    if shutil.which("systemctl") is None:
+        return
+    active = subprocess.run(["systemctl", "is-active", "--quiet", "archon"], check=False)
+    if active.returncode == 0:
+        sys.exit("archon.service is running — send /wa_pair to the control bot instead, "
+                 "or stop the service first.")
+
+
 def main() -> None:
+    _refuse_if_service_running()
     try:
         client = NewClient(SESSION, props=_android_props())
     except TypeError:
