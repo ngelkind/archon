@@ -395,7 +395,7 @@ async def run(rt: Runtime) -> None:
                     rt.audit.note("change_target_unknown", tenant_id=msg.tenant_id,
                                   platform=msg.platform, chat=msg.chat_id,
                                   msg_id=msg.msg_id, kind="edit" if msg.is_edit else "delete")
-                await tglog.log_change(rt, msg, before)
+                await tglog.log_change(rt, msg, before, store=store)
             else:
                 repo.message_upsert(store, msg, chat_pk)
                 # Identifiers only — the app fetches content over the

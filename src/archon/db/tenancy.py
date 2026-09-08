@@ -45,6 +45,7 @@ TENANTED_TABLES = frozenset({
     "audit",
     "integration_credentials", "telegram_links", "whatsapp_links",
     "telegram_userbot_links",
+    "log_outbox",
 })
 
 #: Intentionally global: identity, process bookkeeping, and the system log.
@@ -136,6 +137,7 @@ def tenant_exists(db: Db, tenant_id: int) -> bool:
 #: Child-before-parent order for deleting a tenant's rows.
 _PURGE_ORDER = (
     "messages", "context_messages", "events_created", "scheduled_messages",
+    "log_outbox",
     "pending_replies", "pending_actions", "llm_calls", "api_devices",
     "sub_bots", "contacts", "settings", "gmail_state", "chats", "personas",
     "audit", "integration_credentials", "telegram_links", "whatsapp_links",

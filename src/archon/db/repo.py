@@ -1384,3 +1384,88 @@ def tg_userbot_active_tenants(db: Db) -> list[sqlite3.Row]:
         "SELECT tenant_id, phone, tg_username FROM telegram_userbot_links "
         "WHERE revoked_at IS NULL AND status = 'active' ORDER BY tenant_id"
     )
+
+
+# --- log outbox (deleted/edited-message cards, drained by logworker) --------
+
+def log_outbox_add(
+    store: Store, *, platform: str, chat_id: str, chat_label: str | None,
+    msg_id: str, kind: str, sender: str | None, before_text: str | None,
+    after_text: str | None, coalesce_s: float = 20.0,
+) -> int:
+    """Queue a card. Repeated EDITS of the same still-unsent message merge into
+    the existing row (keep the first ``before``, take the latest ``after``) so a
+    rapid back-and-forth becomes one card. A delete never coalesces — it is the
+    terminal state and should always post.
+    """
+    sc = as_scope(store)
+    if kind == "edited":
+        existing = sc.query_one(
+            "SELECT id FROM log_outbox WHERE tenant_id = ? AND platform = ? "
+            "AND chat_id = ? AND msg_id = ? AND kind = 'edited' AND sent_at IS NULL "
+            "AND (coalesce_until IS NULL OR coalesce_until > ?) ORDER BY id DESC LIMIT 1",
+            (sc.tenant_id, platform, chat_id, msg_id, _now()),
+        )
+        if existing is not None:
+            sc.execute(
+                "UPDATE log_outbox SET after_text = ? WHERE id = ? AND tenant_id = ?",
+                (after_text, int(existing["id"]), sc.tenant_id),
+            )
+            return int(existing["id"])
+    from datetime import UTC, datetime, timedelta
+
+    until = (datetime.now(UTC) + timedelta(seconds=coalesce_s)).strftime("%Y-%m-%d %H:%M:%S")
+    sc.execute(
+        "INSERT INTO log_outbox (tenant_id, platform, chat_id, chat_label, msg_id, "
+        "kind, sender, before_text, after_text, coalesce_until) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (sc.tenant_id, platform, chat_id, chat_label, msg_id, kind, sender,
+         before_text, after_text, until if kind == "edited" else None),
+    )
+    row = sc.query_one("SELECT last_insert_rowid() AS id")
+    return int(row["id"])
+
+
+def log_outbox_due(db: Db, now: str, limit: int = 50) -> list[sqlite3.Row]:
+    """Pending cards whose coalesce window has closed, across all tenants —
+    the worker runs process-wide. Ordered oldest first."""
+    return db.query(
+        "SELECT * FROM log_outbox WHERE sent_at IS NULL "
+        "AND (coalesce_until IS NULL OR coalesce_until <= ?) "
+        "ORDER BY id LIMIT ?",
+        (now, limit),
+    )
+
+
+def log_outbox_mark_sent(db: Db, ids: list[int]) -> None:
+    if not ids:
+        return
+    qs = ",".join("?" for _ in ids)
+    db.execute(  # noqa: S608 — ids are ints from our own rows
+        f"UPDATE log_outbox SET sent_at = datetime('now') WHERE id IN ({qs})", tuple(ids))
+
+
+def log_outbox_mark_failed(db: Db, ids: list[int], error: str) -> None:
+    if not ids:
+        return
+    qs = ",".join("?" for _ in ids)
+    db.execute(  # noqa: S608 — ids are ints from our own rows
+        f"UPDATE log_outbox SET attempts = attempts + 1, last_error = ? WHERE id IN ({qs})",
+        (error[:300], *ids))
+
+
+def log_outbox_drop_exhausted(db: Db, max_attempts: int) -> int:
+    """Give up on cards that have failed too many times, so a permanently
+    unroutable card (e.g. the bot was removed from the channel) does not wedge
+    the queue forever. Returns how many were dropped."""
+    cur = db.execute(
+        "UPDATE log_outbox SET sent_at = datetime('now'), "
+        "last_error = COALESCE(last_error, '') || ' [dropped: max attempts]' "
+        "WHERE sent_at IS NULL AND attempts >= ?",
+        (max_attempts,))
+    return int(cur.rowcount or 0)
+
+
+def log_outbox_depth(db: Db) -> int:
+    row = db.query_one("SELECT COUNT(*) AS n FROM log_outbox WHERE sent_at IS NULL")
+    return int(row["n"]) if row else 0

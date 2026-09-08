@@ -248,6 +248,9 @@ async def main() -> None:
 
     start_subsystem(rt, "tg_userbot", lambda: tg_userbot.run(rt))
     start_subsystem(rt, "scheduler", lambda: scheduler_loop.run(rt))
+    from .logging_ import logworker
+
+    start_subsystem(rt, "logworker", lambda: logworker.run(rt))
     start_subsystem(rt, "subbots", lambda: tg_subbots.run(rt))
     from . import testconsole
 

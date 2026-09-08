@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     # old "-from:me" query excluded it and broke the "email yourself"
     # smoke test.
     gmail_include_self: bool = True
+    # How long edits of one message merge into a single outbox card
+    # before the log worker posts it (logging_/logworker.py).
+    log_coalesce_seconds: float = 20.0
     gmail_poll_seconds: int = 90
 
     # --- Control API (Android app; off by default) ---

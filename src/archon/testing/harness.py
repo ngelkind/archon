@@ -143,6 +143,10 @@ class Harness:
             from ..scheduler import loop as scheduler_loop
 
             return lambda: scheduler_loop.run(rt)
+        if name == "logworker":
+            from ..logging_ import logworker
+
+            return lambda: logworker.run(rt)
         if name == "tg_userbot":
             from ..platforms.telegram import userbot
 
