@@ -17,14 +17,37 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from collections.abc import Awaitable, Callable
 
 from ..llm.base import ToolSpec
 from ..runtime import Runtime
 
 Scope = Literal["owner", "inbound"]
+
+#: Argument names whose VALUE must never reach the audit log, even for a
+#: sensitive tool that otherwise logs its args (llm_set_key wrote a plaintext
+#: provider key to audit.jsonl and the DB mirror).
+_SECRET_ARGS = frozenset({"api_key", "token", "secret", "password", "session"})
+#: Exceptions that are always a programming bug in a handler, never bad user
+#: input — worth an owner-facing signal, not just a JSON string to the model.
+_BUG_ERRORS = (AttributeError, TypeError, KeyError, NameError, IndexError)
+
+
+def _redact(args: dict[str, Any]) -> dict[str, Any]:
+    return {k: ("•••" if k in _SECRET_ARGS else v) for k, v in args.items()}
+
+
+def _with_warning(result: str, warning: str) -> str:
+    try:
+        data = json.loads(result)
+        if isinstance(data, dict):
+            data["warning"] = warning
+            return json.dumps(data, ensure_ascii=False)
+    except (ValueError, TypeError):
+        pass
+    return json.dumps({"result": result, "warning": warning}, ensure_ascii=False)
 
 
 @dataclass(slots=True)
@@ -123,21 +146,46 @@ class Registry:
                               result_summary="denied: out of scope",
                               tenant_id=ctx.tenant_id)
             return json.dumps({"error": f"tool {name} is not available in this context"})
+        audit_args = _redact(args) if tool.sensitive else {}
         try:
             sig = inspect.signature(tool.handler)
             has_var_kw = any(
                 p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
             )
-            accepted = dict(args) if has_var_kw else {
-                k: v for k, v in args.items() if k in sig.parameters
-            }
+            if has_var_kw:
+                accepted, dropped = dict(args), []
+            else:
+                accepted = {k: v for k, v in args.items() if k in sig.parameters}
+                dropped = [k for k in args if k not in sig.parameters]
             result = await tool.handler(ctx, **accepted)
-            ctx.rt.audit.tool(name=name, args=args if tool.sensitive else {},
-                              ok=True, result_summary=str(result)[:200],
-                              tenant_id=ctx.tenant_id)
+            if dropped:
+                # An argument the model supplied that the handler does not take
+                # was silently discarded — which quietly changes the call's
+                # meaning (a dropped `schedule` becomes an immediate send). Tell
+                # the model and the audit instead of hiding it.
+                ctx.rt.audit.tool(name=name, args={**audit_args, "_ignored": dropped},
+                                  ok=True, result_summary=str(result)[:200],
+                                  tenant_id=ctx.tenant_id)
+                return _with_warning(result, f"ignored unknown argument(s): {dropped}")
+            ctx.rt.audit.tool(name=name, args=audit_args, ok=True,
+                              result_summary=str(result)[:200], tenant_id=ctx.tenant_id)
             return result
-        except Exception as exc:  # noqa: BLE001 — errors go back to the model
-            ctx.rt.audit.tool(name=name, args=args, ok=False,
-                              result_summary=repr(exc)[:200],
+        except _BUG_ERRORS as exc:
+            # A programming bug in a handler, not user error. The model still
+            # gets a string, but the owner is told and health degrades so a
+            # dead tool is not invisible behind a JSON error only the model sees.
+            ctx.rt.audit.note("tool_bug", tool=name, error=repr(exc)[:200],
                               tenant_id=ctx.tenant_id)
-            return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+            ctx.rt.health[f"tool:{name}"] = f"bug: {type(exc).__name__}"
+            ctx.rt.audit.tool(name=name, args=_redact(args), ok=False,
+                              result_summary=repr(exc)[:200], tenant_id=ctx.tenant_id)
+            from .. import alerts
+
+            await alerts.alert_owner(
+                ctx.rt, f"tool_bug:{name}",
+                f"⚠️ Tool {name} hit a bug: {type(exc).__name__}: {str(exc)[:150]}")
+            return json.dumps({"error": f"{type(exc).__name__}: {exc}", "is_error": True})
+        except Exception as exc:  # noqa: BLE001 — user-facing errors go back to the model
+            ctx.rt.audit.tool(name=name, args=_redact(args), ok=False,
+                              result_summary=repr(exc)[:200], tenant_id=ctx.tenant_id)
+            return json.dumps({"error": f"{type(exc).__name__}: {exc}", "is_error": True})
