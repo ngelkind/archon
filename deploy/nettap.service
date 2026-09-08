@@ -1,0 +1,8 @@
+[Unit]
+Description=Archon network tap — bounded packet capture around live probes
+# Deliberately NOT sandboxed like archon.service: tcpdump needs raw sockets.
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/archon/app/deploy/nettap.sh capture 180

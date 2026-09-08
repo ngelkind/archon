@@ -41,6 +41,13 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
           ~/.local/bin/uv sync --frozen
+          # ffmpeg is required for video sends (thumbnail/duration probe). A
+          # deploy that leaves it missing means every /download silently fails.
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg missing — installing"
+            sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+          fi
+          command -v ffmpeg >/dev/null || { echo "ffmpeg still missing"; exit 1; }
           # Rebuild goneonize from source with our patches. This is BOTH the M5
           # security hardening (own audited .so, no runtime auto-download) AND
           # the WhatsApp view-once Android-identity spoof. `uv sync` just
@@ -51,4 +58,23 @@ jobs:
           sudo systemctl restart archon
           sleep 5
           systemctl is-active archon
+          # Post-deploy live smoke: trigger the fast probe subset through the
+          # test console and read the report back. It SKIPS cleanly (does not
+          # fail the deploy) when probes are disabled or the test account is not
+          # yet paired — it only fails the deploy on an explicit ❌.
+          rm -f /opt/archon/data/cmd.result
+          echo "live smoke" > /opt/archon/data/cmd.trigger
+          SMOKE=""
+          for _ in $(seq 1 30); do
+            sleep 4
+            [ -f /opt/archon/data/cmd.result ] || continue
+            SMOKE=$(cat /opt/archon/data/cmd.result)
+            case "$SMOKE" in running*|"") continue ;; esac
+            break
+          done
+          echo "live smoke result: $SMOKE"
+          case "$SMOKE" in
+            *❌*) echo "post-deploy live smoke FAILED"; exit 1 ;;
+            *) echo "live smoke ok/skipped" ;;
+          esac
           REMOTE

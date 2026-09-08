@@ -34,10 +34,16 @@ if [ -n "$unexpected" ]; then
   TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
   OWNER=$(grep -E '^TELEGRAM_OWNER_ID=' "$ENV_FILE" | cut -d= -f2-)
   if [ -n "$TOKEN" ] && [ -n "$OWNER" ]; then
-    curl -fsS -m 10 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+    if ! curl -fsS -m 10 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
       --data-urlencode "chat_id=${OWNER}" \
       --data-urlencode "text=🔎 Egress monitor: unexpected outbound connection(s):${unexpected}" \
-      >/dev/null 2>&1 || true
+      >/dev/null 2>&1; then
+      # No `|| true`: a monitor that cannot reach the owner about unexpected
+      # egress has failed at its one job — surface it (systemctl status) instead
+      # of hiding it.
+      echo "$(date -Is) egress-monitor: FAILED to deliver alert" >> "$LOG"
+      exit 1
+    fi
   fi
 fi
 exit 0

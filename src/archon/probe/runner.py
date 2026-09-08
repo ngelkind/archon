@@ -111,11 +111,20 @@ async def _run_one(rt: Runtime, probe: Probe) -> ProbeResult:
                 rt.audit.note("probe_cleanup_failed", name=probe.name, error=repr(exc)[:200])
 
 
+#: Named subsets. "smoke" is the fast post-deploy gate — one probe per platform
+#: that has a non-live proof path, cheap enough to run on every deploy.
+_ALIASES = {"smoke": ("tg_text", "gmail_self")}
+
+
 def select(probes: list[Probe], which: str) -> list[Probe]:
-    words = which.split()
+    words: list[str] = []
+    for w in which.split():
+        words.extend(_ALIASES.get(w, (w,)))
     if not words or "all" in words:
         return list(probes)
     by_name = {p.name: p for p in probes}
+    # An alias may name a probe that was not built (e.g. wa off) — drop those.
+    words = [w for w in words if w in by_name] or words
     unknown = [w for w in words if w not in by_name]
     if unknown:
         raise ProbeError(f"unknown probe(s): {' '.join(unknown)}; "

@@ -197,3 +197,12 @@ async def test_tg_driver_dry_run_needs_no_network(tmp_path):
     results = await run_probes(rt, "tg_text")  # real build_probes, dry-run act
     assert results[0].name == "tg_text"
     assert results[0].ok and "dry-run" in results[0].evidence
+
+
+def test_smoke_alias_expands_to_a_fast_subset():
+    probes = [Probe("tg_text", "tg", None, None),
+              Probe("tg_delete", "tg", None, None),
+              Probe("gmail_self", "gmail", None, None)]
+    names = [p.name for p in select(probes, "smoke")]
+    assert "tg_text" in names and "gmail_self" in names
+    assert "tg_delete" not in names  # smoke is a subset, not everything

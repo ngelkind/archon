@@ -1,0 +1,11 @@
+[Unit]
+Description=Archon nightly live probes (inbound, observed effects)
+# Enabled ONLY after the first attended green run (owner decision): a nightly
+# unattended run drives the test account against the owner's own bot.
+
+[Service]
+Type=oneshot
+User=ubuntu
+# The app's test console watches data/cmd.trigger; "live all" runs every probe
+# and writes the report to data/cmd.result.
+ExecStart=/bin/sh -c 'echo "live all" > /opt/archon/data/cmd.trigger'
