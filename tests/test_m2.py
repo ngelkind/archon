@@ -162,7 +162,9 @@ def test_triage_parsing(tmp_path, monkeypatch):
     router._providers["gemini"] = GarbageFake()
     res2 = asyncio.run(triage(router, platform="wa", chat_name="c", sender_name="s",
                               text="hi"))
-    assert res2.action == "ignore"  # fail closed
+    # Unparseable output is a visible failure now, not a silent "ignore": no
+    # action is taken (fail closed) but .failed lets the pipeline surface it.
+    assert res2.action == "error" and res2.failed
 
 
 def test_respond_demoted_without_auto_reply(tmp_path):

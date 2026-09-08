@@ -15,9 +15,14 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 @dataclass(slots=True)
 class TriageResult:
-    action: str  # ignore | calendar | respond | both
+    action: str  # ignore | calendar | respond | both | error
     confidence: float
     reason: str
+
+    @property
+    def failed(self) -> bool:
+        """The LLM could not be reached/parsed — NOT a real "nothing to do"."""
+        return self.action == "error"
 
 
 async def triage(
@@ -43,17 +48,21 @@ async def triage(
             json_only=True,
             chat_pk=chat_pk,
         )
-    except ProviderError:
-        # Fail closed: no LLM → no action, message stays cached for later.
-        return TriageResult(action="ignore", confidence=0.0, reason="triage unavailable")
+    except ProviderError as exc:
+        # The message is already cached; surface the outage rather than
+        # silently filing it as "ignore" (the failure mode that let inbound
+        # triage be 100% dead while every log line looked normal).
+        return TriageResult(action="error", confidence=0.0,
+                            reason=f"triage unavailable: {type(exc).__name__}: {str(exc)[:150]}")
 
     match = _JSON_RE.search(result.text or "")
     if not match:
-        return TriageResult(action="ignore", confidence=0.0, reason="unparseable triage output")
+        return TriageResult(action="error", confidence=0.0,
+                            reason="unparseable triage output")
     try:
         data = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return TriageResult(action="ignore", confidence=0.0, reason="invalid triage JSON")
+        return TriageResult(action="error", confidence=0.0, reason="invalid triage JSON")
 
     action = str(data.get("action", "ignore"))
     if action not in {"ignore", "calendar", "respond", "both"}:

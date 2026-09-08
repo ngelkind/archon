@@ -193,7 +193,7 @@ class Harness:
             ingest._DEBOUNCE_S.update(self._debounce_backup)
         if self._repo_originals is not None:
             unwrap_repo(self._repo_originals)
-        if self.llm.unscripted:
+        if getattr(self.llm, "unscripted", None):
             details = "; ".join(
                 f"{r.tier} tools={bool(r.tools)} text={r.last_text[:120]!r}"
                 for r in self.llm.unscripted

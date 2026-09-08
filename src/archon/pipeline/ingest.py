@@ -298,6 +298,22 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
         chat_pk=chat_pk,
         auto_reply=auto_reply,
     )
+    if verdict.failed:
+        # The LLM could not be reached or parsed. Do NOT file it as a silent
+        # ignore — record it distinctly and, after a few in a row, tell the
+        # owner. The message stays cached (message_upsert ran before the gate),
+        # so nothing is lost; it simply is not triaged this round.
+        rt.audit.note("triage_unavailable", tenant_id=first.tenant_id,
+                      chat=first.chat_id, platform=first.platform, reason=verdict.reason)
+        rt._triage_fail_streak = getattr(rt, "_triage_fail_streak", 0) + 1
+        if rt._triage_fail_streak >= 3:
+            from .. import alerts
+
+            await alerts.alert_owner(
+                rt, "triage", f"\u26a0\ufe0f Triage keeps failing: {verdict.reason}. "
+                "Inbound messages are not being processed.")
+        return
+    rt._triage_fail_streak = 0
     rt.audit.note("triage", tenant_id=first.tenant_id, chat=first.chat_id,
                   platform=first.platform, verdict=verdict.action,
                   confidence=verdict.confidence, reason=verdict.reason)

@@ -26,6 +26,16 @@ class ProviderError(Exception):
     """A provider failed. The message must never contain user content."""
 
 
+class BudgetExhausted(ProviderError):
+    """The daily LLM budget is spent. Distinct so the caller can tell "we chose
+    not to spend" from "the vendor is down"."""
+
+
+class Truncated(ProviderError):
+    """The model was cut off (max_tokens / length) with nothing usable — as
+    opposed to a deliberate empty answer, which is stop_reason 'end'."""
+
+
 def validate_model(model: str) -> str:
     # Model names reach subprocess argv (claude_code) — validate even though
     # they come from config, not from chat correspondents.

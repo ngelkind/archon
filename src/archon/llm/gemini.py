@@ -140,6 +140,18 @@ class GeminiProvider:
         except (AttributeError, IndexError) as exc:
             raise ProviderError("gemini returned an unexpected response shape") from exc
 
+        # Map Gemini's finish_reason so a truncated/blocked turn is not reported
+        # as a normal 'end' (which is indistinguishable from a real empty reply).
+        finish = str(getattr(candidate, "finish_reason", "") or "").upper()
+        if tool_calls:
+            stop_reason = "tool_use"
+        elif "MAX_TOKENS" in finish:
+            stop_reason = "max_tokens"
+        elif any(x in finish for x in ("SAFETY", "RECITATION", "BLOCK", "PROHIBIT")):
+            stop_reason = "refusal"
+        else:
+            stop_reason = "end"
+
         um = resp.usage_metadata
         return LLMResult(
             text=text,
@@ -151,5 +163,5 @@ class GeminiProvider:
             ),
             model=model,
             provider=self.name,
-            stop_reason="tool_use" if tool_calls else "end",
+            stop_reason=stop_reason,
         )

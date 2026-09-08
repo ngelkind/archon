@@ -17,7 +17,15 @@ import time
 
 from ..db import repo
 from ..runtime import Runtime
-from .base import ChatMessage, LLMResult, Provider, ProviderError, ToolSpec
+from .base import (
+    BudgetExhausted,
+    ChatMessage,
+    LLMResult,
+    Provider,
+    ProviderError,
+    ToolSpec,
+    Truncated,
+)
 
 # Purposes map to tiers; models resolved per active provider.
 _TIER_FOR_PURPOSE = {
@@ -120,7 +128,7 @@ class Router:
             return
         day = repo.llm_cost_since(self.rt.db, "-1 day")
         if day and float(day["cost"]) >= budget:
-            raise ProviderError(
+            raise BudgetExhausted(
                 f"daily LLM budget ${budget:.2f} exhausted (${day['cost']:.2f} spent)"
             )
 
@@ -139,19 +147,32 @@ class Router:
         chat_pk: int | None = None,
     ) -> LLMResult:
         name = self.active_provider_name()
-        provider = self._get_provider(name)
-        if tools and not provider.supports_tools:
-            raise ProviderError(
-                f"active provider {name} does not support tool calling; "
-                "switch provider (llm_set_provider) for agent features"
-            )
-        if name != "claude_code":
-            self._check_budget()
-        model = self.model_for(name, purpose)
-        if not model:
-            raise ProviderError(f"no model configured for {name}/{purpose}")
-
         started = time.monotonic()
+        # Pre-flight failures (missing key/model, tool-less provider, budget)
+        # used to raise before any llm_calls row was written, so a bot that was
+        # quietly refusing every call left no trace. Record and surface them.
+        try:
+            provider = self._get_provider(name)
+            if tools and not provider.supports_tools:
+                raise ProviderError(
+                    f"active provider {name} does not support tool calling; "
+                    "switch provider (llm_set_provider) for agent features"
+                )
+            if name != "claude_code":
+                self._check_budget()
+            model = self.model_for(name, purpose)
+            if not model:
+                raise ProviderError(f"no model configured for {name}/{purpose}")
+        except ProviderError as exc:
+            repo.llm_call_record(
+                self.rt.db, purpose=purpose, provider=name, model="",
+                latency_ms=0, ok=False, chat_pk=chat_pk,
+            )
+            self.rt.audit.note("llm_blocked", provider=name, purpose=purpose,
+                               error=repr(exc)[:200])
+            await self._on_failure(exc)
+            raise
+
         try:
             result = await provider.complete(
                 model=model,
@@ -162,12 +183,13 @@ class Router:
                 json_only=json_only,
                 native_web_search=native_web_search,
             )
-        except ProviderError:
+        except ProviderError as exc:
             repo.llm_call_record(
                 self.rt.db, purpose=purpose, provider=name, model=model,
                 latency_ms=int((time.monotonic() - started) * 1000), ok=False,
                 chat_pk=chat_pk,
             )
+            await self._on_failure(exc)
             raise
 
         from .cost import compute_cost
@@ -192,6 +214,27 @@ class Router:
         )
         self.rt.events.publish("cost.update", provider=name, model=result.model,
                                purpose=purpose, cost_usd=cost)
+        self._consecutive_failures = 0
+        if self.rt.health.get("llm", "").startswith("failing"):
+            self.rt.health["llm"] = "ok"
         if result.stop_reason == "refusal":
             raise ProviderError("the model declined this request (safety refusal)")
+        if result.stop_reason in ("max_tokens", "length") and not (result.text or "").strip() \
+                and not result.tool_calls:
+            raise Truncated(f"{name} was cut off ({result.stop_reason}) with no usable output")
         return result
+
+    async def _on_failure(self, exc: ProviderError) -> None:
+        """Track consecutive provider failures; after a few, flag health and
+        tell the owner — the router docstring promised this and nothing did it."""
+        self._consecutive_failures = getattr(self, "_consecutive_failures", 0) + 1
+        self.rt.health["llm"] = f"failing: {type(exc).__name__}"
+        if isinstance(exc, BudgetExhausted) or self._consecutive_failures >= 3:
+            from .. import alerts
+
+            key = "llm:budget" if isinstance(exc, BudgetExhausted) else "llm:failing"
+            await alerts.alert_owner(
+                self.rt, key,
+                f"\u26a0\ufe0f LLM calls are failing ({type(exc).__name__}): "
+                f"{str(exc)[:200]}. Inbound triage and replies are affected.",
+                every_s=3600 if isinstance(exc, BudgetExhausted) else 1800)
