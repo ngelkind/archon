@@ -1415,7 +1415,7 @@ def tg_userbot_active_tenants(db: Db) -> list[sqlite3.Row]:
 def log_outbox_add(
     store: Store, *, platform: str, chat_id: str, chat_label: str | None,
     msg_id: str, kind: str, sender: str | None, before_text: str | None,
-    after_text: str | None, coalesce_s: float = 20.0,
+    after_text: str | None, coalesce_s: float = 20.0, media_path: str | None = None,
 ) -> int:
     """Queue a card. Repeated EDITS of the same still-unsent message merge into
     the existing row (keep the first ``before``, take the latest ``after``) so a
@@ -1441,10 +1441,10 @@ def log_outbox_add(
     until = (datetime.now(UTC) + timedelta(seconds=coalesce_s)).strftime("%Y-%m-%d %H:%M:%S")
     sc.execute(
         "INSERT INTO log_outbox (tenant_id, platform, chat_id, chat_label, msg_id, "
-        "kind, sender, before_text, after_text, coalesce_until) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "kind, sender, before_text, after_text, coalesce_until, media_path) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (sc.tenant_id, platform, chat_id, chat_label, msg_id, kind, sender,
-         before_text, after_text, until if kind == "edited" else None),
+         before_text, after_text, until if kind == "edited" else None, media_path),
     )
     row = sc.query_one("SELECT last_insert_rowid() AS id")
     return int(row["id"])

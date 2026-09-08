@@ -14,6 +14,7 @@ network send, so the ingest consumer never blocks on a rate-limited card. It:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from ..db import repo
 from ..runtime import Runtime
@@ -31,6 +32,35 @@ async def _post(rt: Runtime, channel: int, text: str) -> bool:
     result = await throttled_send(rt, lambda b: b.send_message(channel, text),
                                   kind="log_card")
     return result is not None
+
+
+_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+_VIDEO_EXT = {".mp4", ".mov", ".m4v"}
+
+
+async def _post_media(rt: Runtime, channel: int, media_path: str, caption: str) -> bool:
+    """Re-send a card's cached media with the card as its caption. Returns False
+    (caller falls back to a text card) if the file is gone or the send fails.
+    A fresh FSInputFile is built per attempt so a retry is not a spent stream."""
+    from aiogram.types import FSInputFile
+
+    from .send import throttled_send
+
+    p = Path(media_path)
+    if not p.exists():
+        return False
+    cap = caption[:1024]  # Telegram caption limit
+    ext = p.suffix.lower()
+    if ext in _PHOTO_EXT:
+        def send(b):
+            return b.send_photo(channel, FSInputFile(str(p)), caption=cap)
+    elif ext in _VIDEO_EXT:
+        def send(b):
+            return b.send_video(channel, FSInputFile(str(p)), caption=cap)
+    else:
+        def send(b):
+            return b.send_document(channel, FSInputFile(str(p)), caption=cap)
+    return await throttled_send(rt, send, kind="log_card_media") is not None
 
 
 async def _drain_once(rt: Runtime) -> int:
@@ -78,7 +108,12 @@ async def _drain_once(rt: Runtime) -> int:
                 rt.audit.note("tglog_suppressed_redaction", tenant_id=tenant_id, chat=chat_id)
                 resolved += 1
                 continue
-            ok = await _post(rt, channel, card)
+            media = row["media_path"]  # column added by migration 017
+            ok = False
+            if media:
+                ok = await _post_media(rt, channel, media, card)
+            if not ok:  # no media, file gone, or media send failed -> text card
+                ok = await _post(rt, channel, card)
             if ok:
                 repo.log_outbox_mark_sent(rt.db, [int(row["id"])])
                 rt.audit.note("tglog_sent", tenant_id=tenant_id, platform=platform,

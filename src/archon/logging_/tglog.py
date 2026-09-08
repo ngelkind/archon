@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import sqlite3
+from pathlib import Path
 
 from ..db import repo
 from ..db.tenancy import TenantScope
@@ -108,12 +109,18 @@ async def log_change(rt: Runtime, msg: InboundMessage,
     kind = "deleted" if msg.is_delete else "edited"
     coalesce_s = float(repo.setting_get(scope, "log.coalesce_seconds",
                                         rt.settings.log_coalesce_seconds))
+    # A deleted/edited message's cached media (a photo we saved at ingest) is
+    # re-attached to the card, so an auditor sees WHAT vanished, not just that
+    # something did. Only when the file is still on disk — otherwise text-only.
+    media_path = before_row["media_path"] if before_row else None
+    if media_path and not Path(media_path).exists():
+        media_path = None
     repo.log_outbox_add(
         scope, platform=msg.platform, chat_id=msg.chat_id, chat_label=chat_label,
         msg_id=msg.msg_id, kind=kind, sender=sender or "unknown",
         before_text=before_text,
         after_text=msg.text if (msg.is_edit and msg.text) else None,
-        coalesce_s=coalesce_s,
+        coalesce_s=coalesce_s, media_path=media_path,
     )
     rt.audit.note("tglog_queued", tenant_id=msg.tenant_id, platform=msg.platform,
                   chat=msg.chat_id, kind=kind)

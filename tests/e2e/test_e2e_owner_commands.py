@@ -112,6 +112,9 @@ async def test_help_lists_every_command(tmp_path):
 @run_async
 async def test_command_menu_matches_help(tmp_path):
     async with await _start(tmp_path) as h:
+        # setMyCommands is sent during control-bot startup, which can land after
+        # the control_bot_started audit — wait for the call instead of racing it.
+        await h.bot_api.wait_for_call("setMyCommands")
         cmds = {c["command"] for c in h.bot_api.calls_of("setMyCommands")[-1].json("commands")}
         assert {"whitelist", "monitor", "logall", "chats", "approvals"} <= cmds
 
