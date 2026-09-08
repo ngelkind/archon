@@ -18,9 +18,11 @@ from .base import Usage
 # (in, out, cache_read, cache_write) per MTok. Longest-prefix match on model.
 PRICES: dict[str, dict[str, tuple[float, float, float, float]]] = {
     "anthropic": {
+        "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5),
+        "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
         "claude-opus-5": (5.0, 25.0, 0.5, 6.25),
         "claude-opus-4": (5.0, 25.0, 0.5, 6.25),
-        "claude-sonnet-5": (3.0, 15.0, 0.3, 3.75),
+        "claude-sonnet-5": (2.0, 10.0, 0.2, 2.5),
         "claude-sonnet-4": (3.0, 15.0, 0.3, 3.75),
         "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
     },
@@ -53,9 +55,25 @@ def _table(db: Db | None) -> dict[str, dict[str, tuple[float, float, float, floa
     return merged
 
 
+def _warn_unknown_price(rt: Any, provider: str, model: str) -> None:
+    """A model we have no price for is being recorded at $0, which quietly
+    under-reports spend. Warn ONCE per (provider, model) so the gap shows up in
+    the audit and on /status instead of hiding behind a silent zero."""
+    try:
+        seen = rt.alert_state.setdefault("priced_unknown", set())
+    except AttributeError:
+        return
+    key = (provider, model)
+    if key in seen:
+        return
+    seen.add(key)
+    rt.audit.note("llm_price_unknown", provider=provider, model=model)
+    rt.health["llm_pricing"] = f"unknown model {provider}/{model} billed at $0"
+
+
 def compute_cost(
     db: Db | None, provider: str, model: str, usage: Usage,
-    reported_usd: float | None = None,
+    reported_usd: float | None = None, rt: Any = None,
 ) -> float:
     if provider == "claude_code":
         return 0.0
@@ -68,7 +86,12 @@ def compute_cost(
         if model.startswith(prefix) and len(prefix) > best_len:
             match, best_len = quad, len(prefix)
     if match is None:
-        return 0.0  # unknown model: recorded with zero cost, visible in reports
+        # openrouter/claude_code price out-of-band (empty table by design). For
+        # a provider we DO price, a missing model means the table is stale and
+        # every such call is booked at $0 — make that visible, don't swallow it.
+        if rt is not None and models:
+            _warn_unknown_price(rt, provider, model)
+        return 0.0  # unknown model: recorded with zero cost, now also audited
     in_p, out_p, cr_p, cw_p = match
     return (
         usage.in_tokens * in_p

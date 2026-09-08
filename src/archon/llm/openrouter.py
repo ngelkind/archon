@@ -132,8 +132,11 @@ class OpenRouterProvider:
             )
 
         usage = data.get("usage") or {}
-        # OpenRouter returns actual cost when usage.include is set.
-        cost = float(usage.get("cost") or 0.0)
+        # OpenRouter returns actual cost when usage.include is set. Absent means
+        # we genuinely don't know — record None so the router falls back to the
+        # price table, instead of asserting a real $0 that suppresses it.
+        raw_cost = usage.get("cost")
+        cost = float(raw_cost) if raw_cost is not None else None
         result = LLMResult(
             text=message.get("content") or "",
             tool_calls=tool_calls,

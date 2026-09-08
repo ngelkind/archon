@@ -158,6 +158,12 @@ class Router:
                     f"active provider {name} does not support tool calling; "
                     "switch provider (llm_set_provider) for agent features"
                 )
+            if not provider.supports_vision and any(m.images for m in messages):
+                raise ProviderError(
+                    f"active provider {name} cannot see images; the picture "
+                    "would be silently dropped. Switch provider (llm_set_provider) "
+                    "to one with vision for this content."
+                )
             if name != "claude_code":
                 self._check_budget()
             model = self.model_for(name, purpose)
@@ -196,7 +202,8 @@ class Router:
         reported = None
         if isinstance(result.raw_assistant, dict):
             reported = result.raw_assistant.get("openrouter_cost_usd")
-        cost = compute_cost(self.rt.db, name, result.model, result.usage, reported)
+        cost = compute_cost(self.rt.db, name, result.model, result.usage,
+                            reported, rt=self.rt)
         repo.llm_call_record(
             self.rt.db,
             purpose=purpose,

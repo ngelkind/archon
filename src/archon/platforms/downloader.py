@@ -86,10 +86,11 @@ def _download_sync(url: str, out_dir: Path, max_bytes: int) -> DownloadedVideo:
         p.unlink(missing_ok=True)
         raise DownloadError(f"video is {size // 1024 // 1024}MB, over the "
                             f"{max_bytes // 1024 // 1024}MB limit for this send")
+    duration = info.get("duration")  # yt-dlp gives a float; the field is int|None
     return DownloadedVideo(
         path=str(p),
         title=info.get("title") or p.stem,
-        duration_s=info.get("duration"),
+        duration_s=round(duration) if duration is not None else None,
         width=info.get("width"),
         height=info.get("height"),
         size_bytes=size,
