@@ -19,9 +19,21 @@ class CalendarError(Exception):
     pass
 
 
+def _reason(exc: HttpError) -> str:
+    """Google's own message/reason (timeRangeEmpty, invalidCalendarId, …). No
+    user content — the API's diagnostic, which the bare status code hid."""
+    import json as _json
+    try:
+        err = _json.loads(exc.content or b"{}").get("error", {})
+        reason = err["errors"][0]["reason"] if err.get("errors") else ""
+        return f"{err.get('message', '')} {reason}".strip() or "no detail"
+    except Exception:  # noqa: BLE001
+        return "no detail"
+
+
 def _wrap(exc: HttpError) -> CalendarError:
     status = exc.resp.status if exc.resp is not None else 0
-    return CalendarError(f"Calendar API error (HTTP {status})")
+    return CalendarError(f"Calendar API error (HTTP {status}): {_reason(exc)}")
 
 
 class CalendarClient:
@@ -49,8 +61,18 @@ class CalendarClient:
         reminders_minutes: list[int] | None = None,
     ) -> dict[str, Any]:
         if all_day:
-            start: dict[str, Any] = {"date": start_iso[:10]}
-            end: dict[str, Any] = {"date": (end_iso or start_iso)[:10]}
+            # Google's all-day end.date is EXCLUSIVE. A single-day event with
+            # end omitted (or equal to start) sent start==end, a zero-length
+            # range Google rejects (timeRangeEmpty); and a multi-day range sent
+            # as-is ended a day early. Add a day when needed.
+            from datetime import date
+
+            start_d = date.fromisoformat(start_iso[:10])
+            end_d = date.fromisoformat((end_iso or start_iso)[:10])
+            if end_d <= start_d:
+                end_d = start_d + timedelta(days=1)
+            start: dict[str, Any] = {"date": start_d.isoformat()}
+            end: dict[str, Any] = {"date": end_d.isoformat()}
         else:
             if not end_iso:
                 end_dt = datetime.fromisoformat(start_iso) + timedelta(hours=1)

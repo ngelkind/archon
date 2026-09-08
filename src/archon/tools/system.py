@@ -28,10 +28,14 @@ def register(registry: Registry) -> None:
         scopes=("owner", "inbound"),
     )
     async def current_datetime(ctx: ToolContext) -> str:
-        now = datetime.now()
+        from zoneinfo import ZoneInfo
+
+        tz = ctx.rt.settings.timezone
+        local = datetime.now(ZoneInfo(tz))
         return json.dumps({
             "utc": datetime.now(UTC).isoformat(timespec="seconds"),
-            "local": now.astimezone().isoformat(timespec="seconds"),
+            "local": local.isoformat(timespec="seconds"),
+            "timezone": tz,
         })
 
     @registry.tool(

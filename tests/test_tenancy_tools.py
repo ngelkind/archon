@@ -165,8 +165,13 @@ def test_no_tool_reaches_the_database_unscoped():
     for path in sorted(pathlib.Path("src/archon/tools").rglob("*.py")):
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if "ctx.rt.db" in line:
-                offenders.append(f"{path.name}:{i}")
-    assert offenders == ["system.py:45"], offenders
+                offenders.append((path.name, i, line.strip()))
+    # The only permitted ctx.rt.db use is the whole-file DB backup (a Db-level
+    # file copy with no per-tenant meaning). Match by content, not line number,
+    # so the guard survives edits above it.
+    assert len(offenders) == 1, offenders
+    name, _line, code = offenders[0]
+    assert name == "system.py" and "backup_to" in code, offenders
 
 
 # --- audit ------------------------------------------------------------------

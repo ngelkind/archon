@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ..agent.agent import run_agent
 from ..agent.prompts import INBOUND_AGENT_SYSTEM
 from ..agent.triage import triage
 from ..db import repo
 from ..db.tenancy import TenantScope
-from ..tenant import tenant_context
 from ..llm.base import ChatMessage, ProviderError, wrap_untrusted
 from ..logging_ import tglog
 from ..models import InboundMessage
 from ..runtime import Runtime
+from ..tenant import tenant_context
 from ..tools.registry import Registry, ToolContext
 
 _MAX_AGE = timedelta(hours=6)
@@ -345,7 +346,7 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
         persona_block=persona_block,
     )
     user_text = (
-        f"Today is {datetime.now(UTC).astimezone().isoformat(timespec='minutes')} "
+        f"Today is {datetime.now(ZoneInfo(rt.settings.timezone)).isoformat(timespec='minutes')} "
         f"(owner timezone: {rt.settings.timezone}).\n"
         f"New message(s) from {first.sender_name or first.sender_id}:\n"
         f"{wrap_untrusted(combined)}\n\nTasks:\n" + "\n".join(task_lines)

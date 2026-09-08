@@ -24,6 +24,21 @@ from ..google_auth import GoogleAuth
 _ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _reason(exc) -> str:
+    """Google's own error message/reason from an HttpError body — no user
+    content, only the API's diagnostic."""
+    import json as _json
+    try:
+        data = _json.loads(exc.content or b"{}")
+        err = data.get("error", {})
+        reason = ""
+        if err.get("errors"):
+            reason = err["errors"][0].get("reason", "")
+        return f"{err.get('message', '')} {reason}".strip() or "no detail"
+    except Exception:  # noqa: BLE001
+        return "no detail"
+
+
 class GmailError(Exception):
     pass
 
@@ -101,7 +116,8 @@ class GmailClient:
                 if kind == "daily_cap":
                     raise DailyCapExceeded("Gmail daily send cap reached") from exc
                 if kind == "fatal":
-                    raise GmailError(f"Gmail send failed (HTTP {exc.resp.status})") from exc
+                    raise GmailError(f"Gmail send failed (HTTP {exc.resp.status}): "
+                             f"{_reason(exc)}") from exc
                 last = exc
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
         raise GmailError("Gmail send failed after retries") from last
@@ -153,26 +169,50 @@ def _decode(data: str) -> str:
         return ""
 
 
-def body_text(message: dict[str, Any]) -> str:
-    """Walk nested parts, prefer text/plain."""
+def _html_to_text(html_str: str) -> str:
+    """Crudely flatten HTML to text: drop script/style, turn block ends into
+    newlines, strip tags, unescape entities. Enough to feed triage — an
+    HTML-only email used to reach the pipeline as subject-only."""
+    import html as _html
+    import re
 
-    def walk(part: dict[str, Any]) -> list[str]:
-        texts: list[str] = []
+    html_str = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html_str)
+    html_str = re.sub(r"(?i)<br\s*/?>", "\n", html_str)
+    html_str = re.sub(r"(?i)</(p|div|li|tr|h[1-6])>", "\n", html_str)
+    text = re.sub(r"(?s)<[^>]+>", "", html_str)
+    text = _html.unescape(text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def body_text(message: dict[str, Any]) -> str:
+    """Walk nested parts, preferring text/plain; fall back to flattened HTML."""
+
+    def walk(part: dict[str, Any]) -> tuple[list[str], list[str]]:
+        plain: list[str] = []
+        htmls: list[str] = []
         mime = part.get("mimeType", "")
         data = part.get("body", {}).get("data")
         if data and (mime.startswith("text/plain") or mime.startswith("message/")):
-            texts.append(_decode(data))
+            plain.append(_decode(data))
+        elif data and mime.startswith("text/html"):
+            htmls.append(_decode(data))
         for sub in part.get("parts", []) or []:
-            texts.extend(walk(sub))
-        return texts
+            p2, h2 = walk(sub)
+            plain.extend(p2)
+            htmls.extend(h2)
+        return plain, htmls
 
     payload = message.get("payload", {})
-    texts = walk(payload)
-    if not texts:
+    plain, htmls = walk(payload)
+    if not plain and not htmls:
         data = payload.get("body", {}).get("data")
         if data:
-            texts.append(_decode(data))
-    return "\n".join(t for t in texts if t.strip())
+            raw = _decode(data)
+            (htmls if payload.get("mimeType", "").startswith("text/html") else plain).append(raw)
+    if any(t.strip() for t in plain):
+        return "\n".join(t for t in plain if t.strip())
+    flattened = [_html_to_text(h) for h in htmls]
+    return "\n".join(t for t in flattened if t.strip())
 
 
 def sender_address(message: dict[str, Any]) -> str:
