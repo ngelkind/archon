@@ -33,7 +33,11 @@ def _product_env(tmp_path, **extra) -> dict:
         "multitenant_enabled": True,
         "api_enabled": True,
         "api_bind_host": "127.0.0.1",
-        "api_port": 8788,
+        # Port 0: the OS assigns a free ephemeral port per test. A fixed
+        # port made consecutive boot tests collide on macOS, where the
+        # previous uvicorn socket is not released synchronously on cancel
+        # (Windows timing hid it). No test asserts on the port number.
+        "api_port": 0,
         "archon_data": tmp_path / "data",
         "archon_secrets": tmp_path / "secrets",
         "gemini_api_key": "fake",
