@@ -43,6 +43,7 @@ async def triage(
         result = await router.complete(
             purpose="triage",
             system=TRIAGE_SYSTEM,
+            messages=[ChatMessage(role="user", text=context)],
             # Reasoning models (NVIDIA nemotron) still emit ~200 tokens of
             # reasoning before the JSON even with thinking off, so a tight cap
             # truncated the answer mid-reasoning → "unparseable triage output"
