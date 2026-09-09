@@ -43,8 +43,12 @@ async def triage(
         result = await router.complete(
             purpose="triage",
             system=TRIAGE_SYSTEM,
-            messages=[ChatMessage(role="user", text=context)],
-            max_tokens=200,
+            # Reasoning models (NVIDIA nemotron) still emit ~200 tokens of
+            # reasoning before the JSON even with thinking off, so a tight cap
+            # truncated the answer mid-reasoning → "unparseable triage output"
+            # and every such message was dropped. Give it room; non-reasoning
+            # providers stop at the JSON and are unaffected.
+            max_tokens=768,
             json_only=True,
             chat_pk=chat_pk,
         )
