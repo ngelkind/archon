@@ -133,10 +133,11 @@ def test_parse_ss_keeps_established_peers():
         'tcp ESTAB 0 0 [::1]:5000 [2606:4700::1]:443 users:(("python",pid=1,fd=9))\n'
     )
     peers = parse_ss(out)
-    assert (SocketPeer("149.154.167.51", 443, "ESTAB") in peers)
+    assert any(p.ip == "149.154.167.51" and p.port == 443 for p in peers)
     assert any(p.port == 5222 for p in peers)
     assert any(p.ip == "2606:4700::1" and p.port == 443 for p in peers)  # ipv6
     assert all(p.state == "ESTAB" for p in peers)  # LISTEN dropped
+    assert all(p.pid == 1 for p in peers)  # owning pid parsed from users:(...)
 
 
 def test_socket_probe_records_and_flags_odd_port(tmp_path):
@@ -162,3 +163,18 @@ def test_socket_probe_catches_connected_claim_without_socket(tmp_path):
     # once a real socket appears, the mismatch clears
     evaluate(rt, [SocketPeer("149.154.167.51", 443, "ESTAB")])
     assert "socket:tg_userbot" not in rt.health
+
+
+def test_socket_probe_ignores_sockets_owned_by_other_processes():
+    import os
+
+    from archon.net.socket_probe import own_pids, parse_ss
+    out = (
+        f'tcp ESTAB 0 0 10.0.0.1:22 8.8.8.8:40000 users:(("sshd",pid=999999,fd=3))\n'
+        f'tcp ESTAB 0 0 10.0.0.1:55216 149.154.167.51:443 users:(("python",pid={os.getpid()},fd=9))\n'
+    )
+    mine = own_pids()
+    kept = [p for p in parse_ss(out) if p.pid in mine]
+    # our own Telegram socket survives; the foreign sshd socket does not
+    assert [(p.ip, p.port) for p in kept] == [("149.154.167.51", 443)]
+    assert os.getpid() in mine

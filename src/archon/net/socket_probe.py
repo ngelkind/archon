@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import shutil
 import time
 from collections.abc import Callable
@@ -49,6 +50,7 @@ class SocketPeer:
     ip: str
     port: int
     state: str
+    pid: int | None = None
 
 
 def parse_ss(output: str) -> list[SocketPeer]:
@@ -67,8 +69,47 @@ def parse_ss(output: str) -> list[SocketPeer]:
         ip, port = _split_hostport(peer)
         if port is None:
             continue
-        peers.append(SocketPeer(ip=ip, port=port, state=state))
+        peers.append(SocketPeer(ip=ip, port=port, state=state, pid=_owning_pid(line)))
     return peers
+
+
+_PID_RE = re.compile(r"pid=(\d+)")
+
+
+def _owning_pid(line: str) -> int | None:
+    m = _PID_RE.search(line)
+    return int(m.group(1)) if m else None
+
+
+def own_pids() -> set[int]:
+    """This process and its descendants. `ss` reports the whole host's sockets,
+    so we keep only the ones OUR tree owns — otherwise sshd's inbound connection
+    (and every other service) reads as our egress. WhatsApp's goneonize helper
+    is a child, so the tree, not just our pid, is what we want."""
+    import os
+
+    me = os.getpid()
+    children: dict[int, list[int]] = {}
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat") as fh:
+                    parts = fh.read().rsplit(") ", 1)[-1].split()
+                ppid = int(parts[1])  # PPid is field 4 overall; field 2 after "comm)"
+            except (OSError, ValueError, IndexError):
+                continue
+            children.setdefault(ppid, []).append(int(entry))
+    except OSError:
+        return {me}
+    tree, stack = {me}, [me]
+    while stack:
+        for kid in children.get(stack.pop(), ()):
+            if kid not in tree:
+                tree.add(kid)
+                stack.append(kid)
+    return tree
 
 
 def _split_hostport(token: str) -> tuple[str, int | None]:
@@ -172,5 +213,7 @@ async def run(rt: Any, *, sampler: Callable[[], Any] | None = None,
     while True:
         out = await sample()
         if out is not None:
-            evaluate(rt, parse_ss(out))
+            mine = own_pids()
+            peers = [p for p in parse_ss(out) if p.pid is None or p.pid in mine]
+            evaluate(rt, peers)
         await asyncio.sleep(interval_s)
