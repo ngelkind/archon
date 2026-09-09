@@ -41,7 +41,10 @@ SAMPLE_S = 10.0
 #: 3478 STUN (WhatsApp calls), 8443 alt-TLS.
 ALLOWED_PORTS = frozenset({80, 443, 5222, 5223, 3478, 8443})
 #: Subsystems whose "connected" claim should be backed by a live socket.
-_WATCHED = ("tg_userbot", "whatsapp")
+#: Subsystems whose live socket IS in our own process (so the cross-check is
+#: meaningful). WhatsApp is intentionally absent: its socket is held by the
+#: out-of-process goneonize helper, and ConnectedEv already tracks it.
+_WATCHED = ("tg_userbot",)
 _CONNECTED_MARKERS = ("connected", "running", "polling", "logged in")
 
 
@@ -214,6 +217,6 @@ async def run(rt: Any, *, sampler: Callable[[], Any] | None = None,
         out = await sample()
         if out is not None:
             mine = own_pids()
-            peers = [p for p in parse_ss(out) if p.pid is None or p.pid in mine]
+            peers = [p for p in parse_ss(out) if p.pid in mine]
             evaluate(rt, peers)
         await asyncio.sleep(interval_s)
