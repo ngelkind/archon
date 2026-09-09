@@ -110,6 +110,9 @@ class Harness:
         llm = script or ScriptedProvider()
         rt.router._providers[PROVIDER_NAME] = llm  # type: ignore[union-attr]
         repo.setting_set(rt.db, "llm.active_provider", PROVIDER_NAME)
+        # Route EVERY purpose to the scripted provider: the harness proves
+        # pipeline behaviour deterministically, not real provider routing.
+        repo.setting_set(rt.db, "llm.force_provider", PROVIDER_NAME)
         repo.setting_set(rt.db, f"llm.model.{PROVIDER_NAME}.cheap", CHEAP_MODEL)
         repo.setting_set(rt.db, f"llm.model.{PROVIDER_NAME}.strong", STRONG_MODEL)
 

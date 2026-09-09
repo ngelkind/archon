@@ -236,10 +236,13 @@ async def _auto_reply(rt: Runtime, router, batch: list[InboundMessage],
         )
         user = (f"From {m.sender_name or m.sender_id}:\n{wrap_untrusted(m.text)}")
         try:
+            # A private-chat reply goes to a real person AS THE OWNER — route it
+            # to a quality/privacy provider (never openrouter/nvidia) via "dm".
             res = await router.complete(
                 purpose="reply", system=system,
                 messages=[ChatMessage(role="user", text=user)],
-                max_tokens=300, chat_pk=chat_row["id"] if chat_row else None)
+                max_tokens=300, chat_pk=chat_row["id"] if chat_row else None,
+                context=("dm" if first.chat_kind == "private" else None))
         except ProviderError as exc:
             rt.audit.note("auto_reply_failed", chat=first.chat_id, error=str(exc)[:120])
             continue

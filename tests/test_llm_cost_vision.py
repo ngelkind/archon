@@ -80,7 +80,9 @@ def test_router_refuses_images_to_a_blind_provider(tmp_path):
         supports_vision = False
 
     router._providers["gemini"] = BlindProvider()
-    with pytest.raises(ProviderError, match="cannot see images"):
+    # The vision route is exhausted when its only provider can't see images —
+    # the router refuses rather than silently dropping the picture.
+    with pytest.raises(ProviderError, match="no vision|no provider could handle vision"):
         asyncio.run(router.complete(purpose="vision", system="s",
                                     messages=[_img_message()]))
 

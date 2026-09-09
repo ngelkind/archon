@@ -51,12 +51,50 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     },
     "claude_code": {"cheap": "sonnet", "strong": "sonnet"},
     # NVIDIA build.nvidia.com. nemotron-3-super is what this account reliably
-    # serves; vision routes (cheap tier) need a *-vision-instruct model, set via
-    # llm.model.nvidia.cheap when image triage matters. Tool calling is
-    # best-effort (see llm/nvidia.py).
+    # serves; with "detailed thinking off" (set in llm/nvidia.py) and enough
+    # max_tokens it DOES emit clean tool calls. Its vision model timed out on
+    # this account, so vision is routed to gemini instead.
     "nvidia": {"cheap": "nvidia/nemotron-3-super-120b-a12b",
                "strong": "nvidia/nemotron-3-super-120b-a12b"},
 }
+
+#: Per-route provider chains, tried in order until one succeeds (the owner's
+#: LLM policy). A route is chosen by (context, purpose, whether tools/images are
+#: present). Override at runtime with the ``llm.routes`` setting (same shape).
+#:
+#: - ``dm``  — a private-chat auto-reply, written AS THE OWNER to a real person:
+#:   quality/privacy providers only. NEVER openrouter (not private), never nvidia.
+#: - ``tool`` — needs native tool-calling: gemini/claude, openrouter as fallback.
+#: - ``vision`` — needs an image-capable model (nvidia's vision model is down).
+#: - ``default`` — triage / classification / group replies: nvidia, then gemini.
+DEFAULT_ROUTES: dict[str, list[str]] = {
+    "dm": ["anthropic", "gemini"],
+    "tool": ["gemini", "anthropic", "openrouter"],
+    "vision": ["gemini"],
+    "default": ["nvidia", "gemini"],
+}
+
+#: Substrings that mark a provider error as "no balance / credit / quota" — the
+#: owner is warned and the router falls through to the next provider (never a
+#: silent drop).
+_NO_BALANCE = ("insufficient", "quota", "balance", "credit", "payment",
+               "402", "billing", "exceeded your current", "out of credit")
+
+
+def _route_key(purpose: str, has_tools: bool, has_images: bool,
+               context: str | None) -> str:
+    if context == "dm":
+        return "dm"
+    if purpose == "vision" or has_images:
+        return "vision"
+    if has_tools or purpose in ("agent", "heavy", "debug"):
+        return "tool"
+    return "default"
+
+
+def _is_no_balance(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(k in s for k in _NO_BALANCE)
 
 
 class Router:
@@ -146,6 +184,20 @@ class Router:
 
     # --- the call -------------------------------------------------------------
 
+    def provider_chain(self, purpose: str, has_tools: bool, has_images: bool,
+                       context: str | None) -> list[str]:
+        """The ordered provider candidates for this call. ``llm.routes`` (a
+        setting, same shape as DEFAULT_ROUTES) overrides the defaults; a
+        non-empty ``llm.force_provider`` setting pins ONE provider for every
+        route (a manual override for testing)."""
+        forced = repo.setting_get(self.rt.db, "llm.force_provider", None)
+        if forced:
+            return [str(forced)]
+        routes = repo.setting_get(self.rt.db, "llm.routes", None) or DEFAULT_ROUTES
+        key = _route_key(purpose, has_tools, has_images, context)
+        chain = routes.get(key) or DEFAULT_ROUTES.get(key) or DEFAULT_ROUTES["default"]
+        return list(chain)
+
     async def complete(
         self,
         *,
@@ -157,59 +209,73 @@ class Router:
         json_only: bool = False,
         native_web_search: bool = False,
         chat_pk: int | None = None,
+        context: str | None = None,
     ) -> LLMResult:
-        name = self.active_provider_name()
-        started = time.monotonic()
-        # Pre-flight failures (missing key/model, tool-less provider, budget)
-        # used to raise before any llm_calls row was written, so a bot that was
-        # quietly refusing every call left no trace. Record and surface them.
-        try:
-            provider = self._get_provider(name)
-            if tools and not provider.supports_tools:
-                raise ProviderError(
-                    f"active provider {name} does not support tool calling; "
-                    "switch provider (llm_set_provider) for agent features"
-                )
-            if not provider.supports_vision and any(m.images for m in messages):
-                raise ProviderError(
-                    f"active provider {name} cannot see images; the picture "
-                    "would be silently dropped. Switch provider (llm_set_provider) "
-                    "to one with vision for this content."
-                )
-            if name != "claude_code":
-                self._check_budget()
-            model = self.model_for(name, purpose)
-            if not model:
-                raise ProviderError(f"no model configured for {name}/{purpose}")
-        except ProviderError as exc:
-            repo.llm_call_record(
-                self.rt.db, purpose=purpose, provider=name, model="",
-                latency_ms=0, ok=False, chat_pk=chat_pk,
-            )
-            self.rt.audit.note("llm_blocked", provider=name, purpose=purpose,
-                               error=repr(exc)[:200])
-            await self._on_failure(exc)
-            raise
+        """Route this call along the provider chain for its (context, purpose):
+        the first provider that has a key, the needed capability, and answers
+        wins. A provider that is out of balance warns the owner and the router
+        falls through to the next; only when the whole chain fails does the
+        caller see an error. ``context="dm"`` marks a private-chat reply."""
+        has_images = any(m.images for m in messages)
+        chain = self.provider_chain(purpose, bool(tools), has_images, context)
+        errors: list[str] = []
+        for name in chain:
+            started = time.monotonic()
+            # --- pre-flight: is this candidate usable at all? ---
+            try:
+                provider = self._get_provider(name)  # ProviderError if no key
+                if tools and not provider.supports_tools:
+                    raise ProviderError(f"{name}: no tool-calling")
+                if has_images and not provider.supports_vision:
+                    raise ProviderError(f"{name}: no vision")
+                if name != "claude_code":
+                    self._check_budget()  # global; aborts the whole chain
+                model = self.model_for(name, purpose)
+                if not model:
+                    raise ProviderError(f"{name}: no model for {purpose}")
+            except BudgetExhausted as exc:
+                repo.llm_call_record(self.rt.db, purpose=purpose, provider=name,
+                                     model="", latency_ms=0, ok=False, chat_pk=chat_pk)
+                self.rt.audit.note("llm_blocked", provider=name, purpose=purpose,
+                                   error="budget exhausted")
+                await self._on_failure(exc)
+                raise
+            except ProviderError as exc:
+                errors.append(str(exc))
+                continue  # candidate unavailable — next in the chain
 
-        try:
-            result = await provider.complete(
-                model=model,
-                system=system,
-                messages=messages,
-                tools=tools,
-                max_tokens=max_tokens,
-                json_only=json_only,
-                native_web_search=native_web_search,
-            )
-        except ProviderError as exc:
-            repo.llm_call_record(
-                self.rt.db, purpose=purpose, provider=name, model=model,
-                latency_ms=int((time.monotonic() - started) * 1000), ok=False,
-                chat_pk=chat_pk,
-            )
-            await self._on_failure(exc)
-            raise
+            # --- the call ---
+            try:
+                result = await provider.complete(
+                    model=model, system=system, messages=messages, tools=tools,
+                    max_tokens=max_tokens, json_only=json_only,
+                    native_web_search=native_web_search)
+            except ProviderError as exc:
+                repo.llm_call_record(
+                    self.rt.db, purpose=purpose, provider=name, model=model,
+                    latency_ms=int((time.monotonic() - started) * 1000), ok=False,
+                    chat_pk=chat_pk)
+                if _is_no_balance(exc):
+                    await self._warn_balance(name, exc)
+                errors.append(f"{name}: {exc}")
+                await self._on_failure(exc)
+                continue  # this provider failed — try the next
 
+            return self._record_success(result, name, purpose, chat_pk, started)
+
+        # --- the whole chain failed ---
+        repo.llm_call_record(self.rt.db, purpose=purpose,
+                             provider=(chain[-1] if chain else ""), model="",
+                             latency_ms=0, ok=False, chat_pk=chat_pk)
+        detail = "; ".join(errors) or "no providers configured for this route"
+        self.rt.audit.note("llm_blocked", purpose=purpose, route=",".join(chain),
+                           error=detail[:300])
+        exc = ProviderError(f"no provider could handle {purpose}: {detail}")
+        await self._on_failure(exc)
+        raise exc
+
+    def _record_success(self, result: LLMResult, name: str, purpose: str,
+                        chat_pk: int | None, started: float) -> LLMResult:
         from .cost import compute_cost
         reported = None
         if isinstance(result.raw_assistant, dict):
@@ -217,20 +283,13 @@ class Router:
         cost = compute_cost(self.rt.db, name, result.model, result.usage,
                             reported, rt=self.rt)
         repo.llm_call_record(
-            self.rt.db,
-            purpose=purpose,
-            provider=name,
-            model=result.model,
-            in_tokens=result.usage.in_tokens,
-            out_tokens=result.usage.out_tokens,
+            self.rt.db, purpose=purpose, provider=name, model=result.model,
+            in_tokens=result.usage.in_tokens, out_tokens=result.usage.out_tokens,
             cache_read_tokens=result.usage.cache_read_tokens,
-            cache_write_tokens=result.usage.cache_write_tokens,
-            cost_usd=cost,
+            cache_write_tokens=result.usage.cache_write_tokens, cost_usd=cost,
             tool_call_count=len(result.tool_calls),
-            latency_ms=int((time.monotonic() - started) * 1000),
-            ok=True,
-            chat_pk=chat_pk,
-        )
+            latency_ms=int((time.monotonic() - started) * 1000), ok=True,
+            chat_pk=chat_pk)
         self.rt.events.publish("cost.update", provider=name, model=result.model,
                                purpose=purpose, cost_usd=cost)
         self._consecutive_failures = 0
@@ -242,6 +301,15 @@ class Router:
                 and not result.tool_calls:
             raise Truncated(f"{name} was cut off ({result.stop_reason}) with no usable output")
         return result
+
+    async def _warn_balance(self, name: str, exc: Exception) -> None:
+        from .. import alerts
+
+        self.rt.health[f"llm:{name}"] = "out of balance"
+        await alerts.alert_owner(
+            self.rt, f"llm_balance:{name}",
+            f"⚠️ {name} is out of balance/credit ({str(exc)[:120]}); "
+            "routing to the next provider.", every_s=1800)
 
     async def _on_failure(self, exc: ProviderError) -> None:
         """Track consecutive provider failures; after a few, flag health and

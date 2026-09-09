@@ -37,12 +37,19 @@ def register(registry: Registry) -> None:
         "Show the active provider, its cheap/strong models, and the daily budget.",
     )
     async def llm_get_routing(ctx: ToolContext) -> str:
+        from ..llm.router import DEFAULT_ROUTES
+
         router: Router = ctx.rt.router  # type: ignore[assignment]
-        name = router.active_provider_name()
+        routes = repo.setting_get(ctx.store, "llm.routes", None) or DEFAULT_ROUTES
+        forced = repo.setting_get(ctx.store, "llm.force_provider", None)
         return json.dumps({
-            "active_provider": name,
-            "cheap_model": router.model_for(name, "triage"),
-            "strong_model": router.model_for(name, "agent"),
+            "routes": routes,  # dm / tool / vision / default -> provider chains
+            "force_provider": forced or None,
+            "models_per_provider": {
+                p: {"cheap": router.model_for(p, "triage"),
+                    "strong": router.model_for(p, "agent")}
+                for p in ("nvidia", "gemini", "anthropic", "openrouter")
+            },
             "daily_budget_usd": repo.setting_get(
                 ctx.store, "llm.daily_budget_usd", ctx.rt.settings.llm_daily_budget_usd),
         })

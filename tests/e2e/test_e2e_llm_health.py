@@ -25,6 +25,7 @@ def _install(rt, provider):
     rt.router = Router(rt)
     rt.router._providers["scripted"] = provider
     repo.setting_set(rt.db, "llm.active_provider", "scripted")
+    repo.setting_set(rt.db, "llm.force_provider", "scripted")
     repo.setting_set(rt.db, "llm.model.scripted.cheap", "scripted:cheap")
     repo.setting_set(rt.db, "llm.model.scripted.strong", "scripted:strong")
 
