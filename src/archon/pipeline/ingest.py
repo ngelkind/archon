@@ -323,7 +323,14 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
     rt.audit.note("triage", tenant_id=first.tenant_id, chat=first.chat_id,
                   platform=first.platform, verdict=verdict.action,
                   confidence=verdict.confidence, reason=verdict.reason)
-    if verdict.action == "ignore":
+    # An auto-reply chat answers EVERY human message — that is its whole point
+    # ("always write a reply, even to small talk", see _auto_reply). So a bare
+    # "ignore" verdict from triage still gets a reply here; only a calendar-ONLY
+    # verdict skips the chat reply (the event IS the response). Non-auto chats
+    # keep the old behaviour: nothing on ignore. The reply model itself skips
+    # stickers, emoji, and the owner's own messages.
+    reply_it = auto_reply and verdict.action != "calendar"
+    if verdict.action == "ignore" and not reply_it:
         return
 
     persona_block = ""
@@ -334,7 +341,7 @@ async def _process_batch(rt: Runtime, batch: list[InboundMessage]) -> None:
 
     # The dumb "answering agent" (cheap, tool-less) writes a reply to EACH
     # sender. The smart tool-agent below runs only for calendar/actions.
-    if verdict.action in ("respond", "both") and auto_reply:
+    if reply_it:
         await _auto_reply(rt, router, batch, chat_row, persona_block, store)
     if verdict.action not in ("calendar", "both"):
         return

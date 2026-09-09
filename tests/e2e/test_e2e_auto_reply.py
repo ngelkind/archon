@@ -46,6 +46,28 @@ async def test_immediate_telegram_auto_reply_is_sent_as_the_owner(tmp_path):
 
 
 @run_async
+async def test_auto_reply_chat_answers_even_an_ignore_verdict(tmp_path):
+    """An auto-reply chat answers EVERY message — a bare 'ignore' from triage
+    must not suppress the reply. This is the whole point of auto-reply ("always
+    write a reply, even to small talk") and was broken: triage's ignore short-
+    circuited the pipeline before the reply ran."""
+    tg = FakeTelethonClient(dialogs=[FakeDialog(id=GROUP.id, name=GROUP.title, is_group=True)])
+    script = (
+        ScriptedProvider()
+        .triage("ignore", reason="just small talk, nothing actionable")
+        .reply("I love jazz — you?")
+    )
+    async with await Harness.start(tmp_path, subsystems=("pipeline", "tg_userbot"),
+                                   telethon=tg, script=script) as h:
+        await h.wait_for_audit("tg_dialogs_synced")
+        h.chat("tg", str(GROUP.id), whitelisted=True, auto_reply=True)
+        await tg.fire(new_message(GROUP, 902, "what's your favorite music?"))
+        done = await h.wait_for_audit("auto_reply_done", chat=str(GROUP.id))
+        assert done["replied"] == 1
+        assert tg.sent and tg.sent[-1]["text"] == "I love jazz — you?"
+
+
+@run_async
 async def test_immediate_whatsapp_auto_reply_is_sent(tmp_path):
     client = wa.FakeAClient(groups=[wa.FakeGroup(WA_GROUP, "kkk")])
     script = ScriptedProvider().triage("respond").reply("On my way!")
