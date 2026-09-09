@@ -87,8 +87,11 @@ async def _default_sampler() -> str | None:
     if shutil.which("ss") is None:
         return None
     try:
+        # NB: no `state established` filter — it SUPPRESSES the State column,
+        # which parse_ss keys on ("ESTAB" in field 1). We filter ESTAB in the
+        # parser instead, so the column is present.
         proc = await asyncio.create_subprocess_exec(
-            "ss", "-Htunp", "state", "established",
+            "ss", "-Htunp",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
     except (TimeoutError, OSError):
