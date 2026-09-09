@@ -1,11 +1,14 @@
-"""Single-active-provider router.
+"""Per-purpose, context-aware provider router.
 
-Exactly ONE provider is active at a time (`llm.active_provider` setting; the
-env var is only the first-boot default). Roles map to a cheap or strong model
-tier WITHIN the active provider. Fallbacks stay within the provider (model
-level); on total provider failure the caller gets a ProviderError and the
-owner is alerted — never a silent switch to a provider whose key may not
-exist.
+Each call is routed along an ordered PROVIDER CHAIN chosen by (context, purpose,
+tools/images present) — see DEFAULT_ROUTES: a private-chat reply ("dm") uses
+anthropic/gemini only; tool/agent work uses gemini/anthropic/openrouter; vision
+uses a vision-capable provider; everything else (triage, classification, group
+replies) uses nvidia then gemini. The first candidate that has a key, the needed
+capability, and answers wins. A provider out of balance/quota warns the owner
+and the router falls through to the next; an exhausted chain raises. Within a
+provider, the cheap/strong tier picks the model. `llm.routes` overrides the
+chains and `llm.force_provider` pins one provider (used by the test harness).
 
 Every call is recorded in llm_calls with its cost, and gated by the daily
 budget (port of calibot's DAILY_LLM_BUDGET).
@@ -42,7 +45,10 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "anthropic": {"cheap": "claude-haiku-4-5", "strong": "claude-opus-5"},
     # strong is a flash, not a pro: gemini-3.1-pro 404s (only -preview names exist)
     # and the pro models 429 on a free-tier key. Bump strong to a pro on a paid key.
-    "gemini": {"cheap": "gemini-3.6-flash", "strong": "gemini-3.7-flash"},
+    # gemini-3.6-flash hit its free-tier quota (429) in testing; the stable
+    # "-latest" alias avoids a pinned version drying up. flash-latest does
+    # vision + tools; strong stays on 3.7-flash (proven for tool-calls).
+    "gemini": {"cheap": "gemini-flash-latest", "strong": "gemini-3.7-flash"},
     "openai": {"cheap": "gpt-5-mini", "strong": "gpt-5"},
     # OpenRouter values are comma-separated in-request fallback chains.
     "openrouter": {
@@ -70,7 +76,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
 DEFAULT_ROUTES: dict[str, list[str]] = {
     "dm": ["anthropic", "gemini"],
     "tool": ["gemini", "anthropic", "openrouter"],
-    "vision": ["gemini"],
+    "vision": ["gemini", "anthropic"],
     "default": ["nvidia", "gemini"],
 }
 
