@@ -38,6 +38,7 @@ PRICES: dict[str, dict[str, tuple[float, float, float, float]]] = {
     },
     "openrouter": {},   # actual cost comes back on each response
     "claude_code": {},  # subscription: $0
+    "nvidia": {},       # build.nvidia.com free tier: $0, still tracked by call count
 }
 
 
@@ -75,8 +76,8 @@ def compute_cost(
     db: Db | None, provider: str, model: str, usage: Usage,
     reported_usd: float | None = None, rt: Any = None,
 ) -> float:
-    if provider == "claude_code":
-        return 0.0
+    if provider in ("claude_code", "nvidia"):
+        return 0.0  # subscription / free tier — no per-token cost
     if reported_usd is not None:
         return reported_usd
     models = _table(db).get(provider, {})

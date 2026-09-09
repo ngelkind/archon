@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     gemini_api_key: str | None = None
     openrouter_api_key: str | None = None
+    # NVIDIA build.nvidia.com (OpenAI-compatible NIM). NVDA_KEY is the name
+    # used in the job-finding project; NVIDIA_API_KEY is the canonical one.
+    nvidia_api_key: str | None = None
 
     # --- Paths ---
     archon_data: Path = Field(default=_REPO_ROOT / "data")
@@ -201,7 +204,7 @@ class Settings(BaseSettings):
 
     @field_validator("tg_log_channel_id", "telegram_api_id", "telethon_session",
                      "telegram_api_hash", "anthropic_api_key", "openai_api_key",
-                     "gemini_api_key", "openrouter_api_key", mode="before")
+                     "gemini_api_key", "openrouter_api_key", "nvidia_api_key", mode="before")
     @classmethod
     def _empty_env_is_none(cls, v):
         # ``KEY=`` lines in .env arrive as empty strings; treat them as unset.

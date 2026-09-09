@@ -50,6 +50,12 @@ PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
         "strong": "anthropic/claude-sonnet-5",
     },
     "claude_code": {"cheap": "sonnet", "strong": "sonnet"},
+    # NVIDIA build.nvidia.com. nemotron-3-super is what this account reliably
+    # serves; vision routes (cheap tier) need a *-vision-instruct model, set via
+    # llm.model.nvidia.cheap when image triage matters. Tool calling is
+    # best-effort (see llm/nvidia.py).
+    "nvidia": {"cheap": "nvidia/nemotron-3-super-120b-a12b",
+               "strong": "nvidia/nemotron-3-super-120b-a12b"},
 }
 
 
@@ -95,6 +101,12 @@ class Router:
                 raise ProviderError("no Gemini API key configured")
             from .gemini import GeminiProvider
             provider = GeminiProvider(key, rt=self.rt)
+        elif name == "nvidia":
+            key = db_key or s.nvidia_api_key
+            if not key:
+                raise ProviderError("no NVIDIA API key configured")
+            from .nvidia import NvidiaProvider
+            provider = NvidiaProvider(key, rt=self.rt)
         elif name == "openrouter":
             key = db_key or s.openrouter_api_key
             if not key:
