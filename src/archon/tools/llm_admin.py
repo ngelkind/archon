@@ -139,7 +139,13 @@ def register(registry: Registry) -> None:
         },
     )
     async def cost_breakdown(ctx: ToolContext, period: str) -> str:
-        expr = {"day": "-1 day", "week": "-7 days", "month": "-30 days"}[period]
+        spans = {"day": "-1 day", "week": "-7 days", "month": "-30 days"}
+        expr = spans.get(period)
+        if expr is None:
+            # A bad value used to raise KeyError (a handler "bug"); return a
+            # clean, actionable error the model can correct instead.
+            return json.dumps({"error": f"period must be one of {sorted(spans)}",
+                               "got": period})
         rows = repo.llm_cost_breakdown(ctx.store, expr)
         return json.dumps([
             {"provider": r["provider"], "model": r["model"], "purpose": r["purpose"],
