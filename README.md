@@ -1,9 +1,25 @@
 # Archon
 
-Personal AI assistant. Reads WhatsApp / Telegram / Gmail, auto-creates Google
-Calendar events from messages, and is controlled entirely through a Telegram
-bot. Runs as one asyncio process on a small Linux VM; no inbound ports except
-SSH (Telegram long polling, outbound-only connections everywhere).
+An autonomous personal assistant agent. It ingests WhatsApp, Telegram and Gmail,
+decides on its own what deserves a reply, drafts and sends one as the owner,
+and turns messages into Google Calendar events — operated end to end from a
+Telegram control bot. One asyncio process on a small Linux VM, no inbound ports.
+
+**What this project is about, technically:** an agent that is allowed to act on a
+real person's real messages. Most of the engineering here is the part that makes
+that safe — a triage stage that decides *whether* to act at all, a ~60-tool
+catalog with validated inputs and honest failures, a confirmation flow for
+anything irreversible, per-tenant scoping, a network ledger that observes every
+outbound request and alarms on unexpected egress, PII redaction in the audit log,
+and a three-layer test harness that runs the real runtime against fake transports.
+
+| | |
+|---|---|
+| Scale | ~114 commits, Python 3.12, asyncio |
+| Agent | triage classifier → tool-loop agent → personas/contexts, ~60 tools |
+| LLM | 5 provider backends, per-purpose routing, budget + cost tracking, vision fallback |
+| Safety | egress tripwire, audit outbox, confirmation sweep, tenant isolation |
+| Deploy | OCI provisioning, cloud-init, systemd, CI, live post-deploy probes |
 
 - **Security model**: see [SECURITY.md](SECURITY.md). Short version: every
   dependency is open source and talks only to its own platform's servers;
